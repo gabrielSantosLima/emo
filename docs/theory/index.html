@@ -1,0 +1,1281 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>emo · SNES Emulation Field Guide</title>
+    <meta
+      name="description"
+      content="A minimal theoretical base for building a Super Nintendo emulator: timing, buses, CPU, PPU, APU, DMA, cartridges, and testing."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      try {
+        const stored = localStorage.getItem("emo-theory-theme");
+        const dark = stored
+          ? stored === "dark"
+          : matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+
+    <header class="hero">
+      <div class="wrap hero-inner">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="dot"></span> emo · theory notes</p>
+          <h1>How a SNES emulator<br /><span class="gradient">actually works</span></h1>
+          <p class="lede">
+            A minimal, language-agnostic theoretical base for the hardware we are
+            about to emulate: clocks, buses, processors, pixels, samples, and the
+            discipline of proving it right.
+          </p>
+          <ul class="meta">
+            <li>13 sections</li>
+            <li><span id="reading-time">~25 min read</span></li>
+            <li>Living document</li>
+          </ul>
+        </div>
+        <div class="hero-side">
+          <button
+            id="theme-toggle"
+            class="icon-btn"
+            type="button"
+            aria-label="Toggle color theme"
+          >
+            <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <div class="hero-card">
+            <p class="hero-card-label">The one rule</p>
+            <p>Same state + same inputs = same outputs, at the same time.</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="wrap layout">
+      <aside class="toc" aria-label="Table of contents">
+        <p class="toc-title">Contents</p>
+        <nav id="toc-nav"></nav>
+        <noscript><p class="toc-title">Enable JavaScript for the contents list.</p></noscript>
+      </aside>
+
+      <main id="main">
+        <section id="why" class="section">
+          <div class="section-head">
+            <span class="section-num">01</span>
+            <h2>Emulation is a timing problem</h2>
+          </div>
+
+          <p>
+            An emulator is not a simulation of electricity. It is a software model
+            that reproduces the <strong>observable behavior</strong> of a machine:
+            given the same initial state and the same inputs, it produces the same
+            outputs at the same moments in time. For a game console, the interesting
+            outputs are memory contents, interrupts, video frames and audio samples.
+          </p>
+
+          <p>
+            The hard part is not making a CPU execute instructions. The hard part is
+            making every component observe the world in the same order the real
+            hardware does. A write to a video register one scanline too late is a
+            visible glitch. An audio sample generated one step too early is a
+            pop. Emulation is, first and foremost, a scheduling problem.
+          </p>
+
+          <div class="grid grid-3">
+            <div class="card">
+              <span class="tag">Accuracy</span>
+              <h4>Does it behave like the hardware?</h4>
+              <p>
+                Cycle counts, bus activity, register side effects, timing of
+                interrupts and DMA. Accuracy is measured against the real machine,
+                not against another emulator.
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">Compatibility</span>
+              <h4>Does the game run correctly?</h4>
+              <p>
+                The set of software that produces the expected result. It is not the
+                same thing as accuracy: an approximate emulator can run many games,
+                and a precise one can still fail on an obscure edge case.
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">Performance</span>
+              <h4>Does it fit the frame budget?</h4>
+              <p>
+                NTSC gives roughly 16.6 ms per frame for CPU, PPU and APU work. Every
+                accuracy improvement costs cycles; the skill is spending them where
+                software can observe the difference.
+              </p>
+            </div>
+          </div>
+
+          <div class="callout">
+            <span class="label">Key distinction</span>
+            <p>
+              <strong>Low-level emulation (LLE)</strong> models the actual hardware
+              units and their timing. <strong>High-level emulation (HLE)</strong>
+              intercepts a known interface and reproduces its result. HLE is faster
+              and simpler, but it tends to break when software uses the interface in
+              an unexpected way. For a from-scratch SNES emulator, start with LLE for
+              the main components.
+            </p>
+          </div>
+
+          <p>
+            Finally, determinism is a feature. If the core depends only on emulated
+            time, not on wall-clock time or randomness, then save states, rewind,
+            netplay, automated tests and bug reports all become tractable. Treat
+            determinism as a design constraint from day one.
+          </p>
+        </section>
+
+        <section id="clocked-system" class="section">
+          <div class="section-head">
+            <span class="section-num">02</span>
+            <h2>The machine is a clocked system</h2>
+          </div>
+
+          <p>
+            Every useful unit of time in the SNES is derived from a crystal
+            oscillator. The main oscillator feeds the CPU and the PPU. The audio
+            subsystem has its <strong>own</strong> oscillator, which is the root cause
+            of most synchronization pain.
+          </p>
+
+          <div class="timing" aria-labelledby="timing-title">
+            <h3 id="timing-title" style="margin-top: 0">Timing explorer</h3>
+            <div class="segmented" role="group" aria-label="Video standard">
+              <button type="button" data-std="ntsc" aria-pressed="true">NTSC</button>
+              <button type="button" data-std="pal" aria-pressed="false">PAL</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Unit</th>
+                    <th scope="col">Rate</th>
+                    <th scope="col">Derivation</th>
+                  </tr>
+                </thead>
+                <tbody id="timing-body"></tbody>
+              </table>
+            </div>
+            <p class="hint" id="timing-note"></p>
+          </div>
+
+          <p>
+            A frame is a grid: <strong>scanlines</strong> stacked vertically, each one
+            divided into <strong>dots</strong> (PPU pixels). One dot lasts four master
+            cycles. The CPU does not run on dots; it runs on memory accesses that cost
+            6, 8 or 12 master cycles depending on the region being touched. That is
+            why the CPU is described as roughly 3.58 MHz even though the master clock
+            is 21.48 MHz.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Access type</th>
+                  <th scope="col">Master cycles</th>
+                  <th scope="col">Examples</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Internal / no bus access</td>
+                  <td class="num">6</td>
+                  <td>Register operations, internal cycles</td>
+                </tr>
+                <tr>
+                  <td>Fast memory access</td>
+                  <td class="num">8</td>
+                  <td>WRAM, most cartridge ROM</td>
+                </tr>
+                <tr>
+                  <td>Slow / I/O access</td>
+                  <td class="num">12</td>
+                  <td>PPU, APU and other memory-mapped registers</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout">
+            <span class="label">Design decision</span>
+            <p>
+              Pick one canonical time unit for the core and derive everything else
+              from it. Most accurate emulators use <strong>master cycles</strong>
+              (or a normalized nanosecond-like unit) so that CPU, PPU and APU can be
+              compared without floating point. Never use the host clock inside the
+              emulation core.
+            </p>
+          </div>
+
+          <h3>Dots, scanlines and frames</h3>
+          <p>
+            A scanline is 1364 master cycles, or 341 dots. Only 256 dots are visible
+            in normal resolution; the rest is horizontal blanking. A frame has 262
+            lines on NTSC (312 on PAL), and only the first 224 (or 239 in overscan)
+            are visible. Vertical blanking is where the CPU is allowed to touch VRAM
+            and OAM freely.
+          </p>
+          <p>
+            The picture is therefore produced <em>continuously</em>, not all at once
+            at the end of the frame. Registers written while the beam is in the middle
+            of the screen can change the rest of the frame. This single fact drives
+            most of the PPU design.
+          </p>
+        </section>
+
+        <section id="synchronization" class="section">
+          <div class="section-head">
+            <span class="section-num">03</span>
+            <h2>Keeping independent clocks in sync</h2>
+          </div>
+
+          <p>
+            The CPU and PPU share the 21.477 MHz master clock, so their relationship
+            is an integer ratio and synchronization is trivial. The APU does not: its
+            24.576 MHz oscillator does not divide the video clock, so the CPU and the
+            SPC700 drift relative to each other unless the emulator actively keeps
+            them aligned.
+          </p>
+
+          <h3>Relative schedulers</h3>
+          <p>
+            The classic SNES solution is a <strong>relative scheduler</strong>. Keep a
+            signed 64-bit counter for each pair of components that need to stay in
+            sync. When the CPU runs <code>N</code> cycles, subtract
+            <code>N &times; f_other</code>. When the other component runs
+            <code>N</code> cycles, add <code>N &times; f_self</code>. Whichever side is
+            behind gets to execute next.
+          </p>
+
+          <pre><code>// CPU &lt;-&gt; SPC700, NTSC
+int64 cpu_smp = 0;
+
+if (cpu_smp &gt;= 0) {
+    cycles = cpu.step();
+    cpu_smp -= cycles * 24'576'000;   // weight by the SPC700 clock
+} else {
+    cycles = spc.step();
+    cpu_smp += cycles * 21'477'272;   // weight by the CPU clock
+}</code></pre>
+
+          <p>
+            The same pattern links the SPC700 to the DSP. The SNES needs two such
+            counters: <code>CPU &harr; SPC700</code> and <code>SPC700 &harr; DSP</code>.
+            The CPU&harr;PPU pair runs on the same clock, so it can use raw master
+            cycles without scaling.
+          </p>
+
+          <h3>Granularity</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Granularity</th>
+                  <th scope="col">What runs</th>
+                  <th scope="col">Trade-off</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Per instruction</td>
+                  <td>One CPU instruction, then catch up PPU/APU</td>
+                  <td>Simple and fast; misses mid-instruction bus effects</td>
+                </tr>
+                <tr>
+                  <td>Per CPU cycle</td>
+                  <td>One memory access or internal cycle</td>
+                  <td>Good accuracy/perf balance; the usual starting point</td>
+                </tr>
+                <tr>
+                  <td>Per dot</td>
+                  <td>One PPU pixel (4 master cycles)</td>
+                  <td>Needed for mid-scanline effects; much more expensive</td>
+                </tr>
+                <tr>
+                  <td>Per scanline</td>
+                  <td>An entire line at once</td>
+                  <td>Fast renderer, but inaccurate for raster tricks</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>
+            A pragmatic architecture is the <strong>catch-up</strong> model: the CPU
+            executes a whole instruction, but every bus access advances the PPU and
+            APU up to the current master cycle. It keeps the CPU code simple while
+            preserving the ordering that software can observe.
+          </p>
+
+          <div class="callout warn">
+            <span class="label">Common trap</span>
+            <p>
+              Running the APU in large chunks at the end of a frame is tempting and
+              almost always wrong. Music and sound effects depend on register writes
+              landing at the right SPC cycle, and the DSP reads ARAM while the SPC700
+              is running. Sync first, optimize later.
+            </p>
+          </div>
+        </section>
+
+        <section id="memory" class="section">
+          <div class="section-head">
+            <span class="section-num">04</span>
+            <h2>Memory is the interface</h2>
+          </div>
+
+          <p>
+            The 65C816 sees a 24-bit address space: 16 MB, split into 256 banks of
+            64 KB. Almost everything the CPU does is a read or a write through that
+            space, and almost every device is exposed as memory-mapped registers. The
+            bus is the central object of the emulator.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Region</th>
+                  <th scope="col">Contents</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="num">$00&ndash;$3F, $80&ndash;$BF</td>
+                  <td>
+                    System area: WRAM mirrors, PPU/APU registers, CPU I/O, DMA
+                    registers, joypads
+                  </td>
+                </tr>
+                <tr>
+                  <td class="num">$40&ndash;$7D, $C0&ndash;$FF</td>
+                  <td>Cartridge ROM and SRAM (mapping depends on LoROM/HiROM)</td>
+                </tr>
+                <tr>
+                  <td class="num">$7E&ndash;$7F</td>
+                  <td>128 KB of Work RAM (WRAM)</td>
+                </tr>
+                <tr>
+                  <td class="num">$2100&ndash;$21FF</td>
+                  <td>PPU and APU registers (mirrored across banks)</td>
+                </tr>
+                <tr>
+                  <td class="num">$4200&ndash;$43FF</td>
+                  <td>CPU control, interrupts, multiply/divide, DMA channels</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Reads and writes are not symmetric</h3>
+          <p>
+            Many registers behave differently when read versus written, and some
+            have side effects on every access: writing a data register can increment
+            an internal address, reading a status register can acknowledge an
+            interrupt, and reading OAM or VRAM returns a latched value. The bus API
+            must therefore expose <code>read(addr)</code> and <code>write(addr,
+            value)</code> as operations with behavior, not as array indexing.
+          </p>
+
+          <h3>Open bus and wait states</h3>
+          <p>
+            Addresses with no device return the last value that was on the data bus,
+            a behavior called <strong>open bus</strong>. Games do read unmapped
+            regions; returning zero is not always harmless. Access speed also depends
+            on the region: WRAM and most ROM are fast, while PPU/APU registers are
+            slow and cost extra master cycles. The memory map is a timing map too.
+          </p>
+
+          <div class="callout">
+            <span class="label">Mental model</span>
+            <p>
+              Build the bus before the CPU. The CPU only needs to ask the bus for
+              bytes and to know how many cycles the access cost. If the bus owns
+              mapping, mirroring, open bus and side effects, the CPU stays small and
+              testable.
+            </p>
+          </div>
+        </section>
+
+        <section id="cpu" class="section">
+          <div class="section-head">
+            <span class="section-num">05</span>
+            <h2>The CPU: a 65C816 with a 24-bit world</h2>
+          </div>
+
+          <p>
+            The SNES CPU is a Ricoh 5A22 built around the WDC 65C816. It is
+            source-compatible with the 6502 but adds 16-bit registers, a 24-bit
+            address space, new addressing modes and a native mode with different
+            semantics from the 6502-compatible emulation mode.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Register</th>
+                  <th scope="col">Width</th>
+                  <th scope="col">Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td class="num">A / B / C</td><td class="num">8/8/16</td><td>Accumulator (C is A and B together)</td></tr>
+                <tr><td class="num">X, Y</td><td class="num">8 or 16</td><td>Index registers</td></tr>
+                <tr><td class="num">S</td><td class="num">16</td><td>Stack pointer</td></tr>
+                <tr><td class="num">D</td><td class="num">16</td><td>Direct page base</td></tr>
+                <tr><td class="num">DB, PB</td><td class="num">8 each</td><td>Data bank and program bank</td></tr>
+                <tr><td class="num">PC</td><td class="num">16</td><td>Program counter inside the current bank</td></tr>
+                <tr><td class="num">P</td><td class="num">8</td><td>Status flags: N V M X D I Z C</td></tr>
+                <tr><td class="num">E</td><td class="num">1</td><td>Emulation mode (6502 compatibility)</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>M, X and E change the instruction set</h3>
+          <p>
+            The <code>M</code> flag selects 8- or 16-bit accumulator/memory accesses;
+            <code>X</code> selects 8- or 16-bit index registers. In emulation mode
+            (<code>E=1</code>), the CPU behaves like a 6502: 8-bit registers, a
+            page-1 stack, and the 6502 interrupt vectors. <code>XCE</code> switches
+            between the two worlds.
+          </p>
+          <p>
+            The practical consequence is that one opcode has several behaviors. A
+            256-entry table is not enough: the effective instruction set is closer to
+            <strong>1,280 variants</strong> once M, X and E are taken into account.
+            Generate the table or the code from a compact description instead of
+            writing every combination by hand.
+          </p>
+
+          <h3>Addressing modes</h3>
+          <p>
+            Expect immediate, direct, direct indexed, absolute, absolute indexed,
+            long, long indexed, stack-relative, stack-relative indirect, and several
+            indirect forms. Direct-page and absolute indexing have page-crossing
+            penalties and wrapping rules that differ between emulation and native
+            mode. These quirks are exactly what the CPU test ROMs check.
+          </p>
+
+          <h3>Interrupts and control flow</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Event</th>
+                  <th scope="col">Trigger</th>
+                  <th scope="col">Native vector</th>
+                  <th scope="col">Emulation vector</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>RESET</td><td>Power-on / reset</td><td class="num">$FFEC</td><td class="num">$FFFC</td></tr>
+                <tr><td>NMI</td><td>Start of vertical blank</td><td class="num">$FFEA</td><td class="num">$FFFA</td></tr>
+                <tr><td>IRQ</td><td>H/V timer or external</td><td class="num">$FFEE</td><td class="num">$FFFE</td></tr>
+                <tr><td>BRK</td><td>Software breakpoint</td><td class="num">$FFE6</td><td class="num">$FFFE</td></tr>
+                <tr><td>COP</td><td>Coprocessor call</td><td class="num">$FFE4</td><td class="num">$FFF4</td></tr>
+                <tr><td>ABORT</td><td>Bus abort input</td><td class="num">$FFE8</td><td class="num">&mdash;</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>
+            <code>WAI</code> sleeps until an interrupt, <code>STP</code> stops the
+            clock until reset, and interrupt recognition has a specific cost relative
+            to the current instruction. Games use <code>WAI</code> to wait for vblank,
+            so a wrong implementation shows up as a hang or as an unstable frame rate.
+          </p>
+
+          <div class="callout warn">
+            <span class="label">Do not skip</span>
+            <p>
+              Validate the CPU against instruction-by-instruction test suites before
+              touching video. The
+              <a href="https://github.com/SingleStepTests/65816" target="_blank" rel="noopener noreferrer">SingleStepTests</a>
+              suite gives you the full state and bus activity for 20,000 runs per
+              opcode; the
+              <a href="https://github.com/gilyon/snes-tests" target="_blank" rel="noopener noreferrer">gilyon tests</a>
+              cover the functional quirks on real hardware. This is the cheapest
+              debugging you will ever do.
+            </p>
+          </div>
+        </section>
+
+        <section id="ppu" class="section">
+          <div class="section-head">
+            <span class="section-num">06</span>
+            <h2>The PPU: pixels on a schedule</h2>
+          </div>
+
+          <p>
+            The SNES has two video chips, S-PPU1 and S-PPU2. They are hard-wired
+            logic, not programmable processors, and the CPU cannot read back the
+            pixels they generate. The only feedback the CPU gets is through status
+            registers and the H/V counters. That makes the PPU the least documented
+            and most frustrating component to emulate perfectly.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Memory</th>
+                  <th scope="col">Size</th>
+                  <th scope="col">Contents</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>VRAM</td><td class="num">64 KB</td><td>Tiles, tilemaps, Mode 7 map</td></tr>
+                <tr><td>CGRAM</td><td class="num">512 B</td><td>256 colors, 15-bit BGR555</td></tr>
+                <tr><td>OAM</td><td class="num">544 B</td><td>128 sprites: 4 bytes each plus 32 bytes of high bits</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Tiles are bitplanes</h3>
+          <p>
+            A tile is 8&times;8 pixels stored as separate bitplanes, not as bytes of
+            palette indices. A 2bpp tile uses two planes, a 4bpp tile four, an 8bpp
+            tile eight. Decoding a pixel means combining one bit from each plane into
+            a palette index. Tilemaps then reference tiles by index and add flip,
+            palette and priority bits.
+          </p>
+
+          <h3>Background modes</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Mode</th>
+                  <th scope="col">Layers</th>
+                  <th scope="col">Depth</th>
+                  <th scope="col">Typical use</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td class="num">0</td><td class="num">4</td><td>2bpp each</td><td>Simple scenes, four independent layers</td></tr>
+                <tr><td class="num">1</td><td class="num">3</td><td>4/4/2bpp</td><td>The most common mode in commercial games</td></tr>
+                <tr><td class="num">2</td><td class="num">2</td><td>4bpp</td><td>Offset-per-tile effects</td></tr>
+                <tr><td class="num">3</td><td class="num">2</td><td>8/4bpp</td><td>More colors, offset-per-tile</td></tr>
+                <tr><td class="num">4</td><td class="num">2</td><td>8/2bpp</td><td>Offset-per-tile with a low-color layer</td></tr>
+                <tr><td class="num">5</td><td class="num">2</td><td>4/2bpp</td><td>512-pixel hi-res mode</td></tr>
+                <tr><td class="num">6</td><td class="num">1</td><td>4bpp</td><td>Hi-res, offset-per-tile</td></tr>
+                <tr><td class="num">7</td><td class="num">1</td><td>8bpp</td><td>Affine rotation and scaling</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Sprites and priorities</h3>
+          <p>
+            OAM holds 128 sprites. Each scanline can display at most 32 sprites and 34
+            8&times;8 tiles; exceeding that sets the overflow flags and drops sprites.
+            Sprites support 8&times;8, 16&times;16, 32&times;32 and 64&times;64 sizes,
+            horizontal and vertical flipping, palettes and priority relative to
+            backgrounds. Priority is not a single number: background layers have a
+            base priority, each tile can raise it, and sprites are inserted at
+            several priority levels.
+          </p>
+
+          <h3>Mode 7</h3>
+          <p>
+            Mode 7 is the famous affine mode: a 128&times;128 tilemap is transformed by
+            a 2&times;2 matrix, with scroll, center point and wrapping/fill rules. It
+            is used for racing games, rotating rooms and the classic SNES
+            "floor" effect. It is still 8bpp tiles, but the tilemap is linear rather
+            than the usual 32&times;32 layout.
+          </p>
+
+          <h3>Effects</h3>
+          <p>
+            On top of the layers sit mosaic, two windows with per-layer enable/invert
+            and logic modes, color math (add/subtract, half, fixed color), pseudo-hires
+            and interlace. These are not post-processing filters: they are part of the
+            per-pixel priority and blending pipeline.
+          </p>
+
+          <h3>Timing is the renderer</h3>
+          <p>
+            The PPU emits one dot every four master cycles: 341 dots per line, 262
+            lines per NTSC frame. During the visible portion it fetches tiles and
+            sprites; during horizontal and vertical blanking the CPU may access VRAM
+            and OAM. The H/V counters let software synchronize with the beam, and
+            IRQs can fire at a chosen scanline or dot.
+          </p>
+          <p>
+            A scanline renderer that applies all register changes at the start of the
+            line is a reasonable first target. It will run most games, but raster
+            effects that change scroll, color or windows mid-line will be wrong. A
+            dot-based renderer is the accurate path, at a significant performance
+            cost.
+          </p>
+
+          <div class="callout warn">
+            <span class="label">Expect this to be the hard part</span>
+            <p>
+              Even mature emulators still discover PPU edge cases. Build the PPU with
+              a clear pixel pipeline, keep every register latch explicit, and make it
+              easy to dump VRAM, CGRAM and OAM for comparison against a reference
+              emulator.
+            </p>
+          </div>
+        </section>
+
+        <section id="dma" class="section">
+          <div class="section-head">
+            <span class="section-num">07</span>
+            <h2>DMA and HDMA: stealing cycles</h2>
+          </div>
+
+          <p>
+            The SNES has eight DMA channels. Each channel connects a region of CPU
+            memory (the A-bus) to a PPU or APU register (the B-bus) and can copy a
+            block on demand. DMA is not free: it halts the CPU and consumes master
+            cycles, and the transfer pattern determines the order of reads and writes.
+          </p>
+
+          <p>
+            <strong>HDMA</strong> is the more interesting mode. Instead of one large
+            transfer, each channel reads a small table and performs a transfer at the
+            start of every scanline, optionally indirecting through another pointer.
+            That is how games do per-line gradients, parallax, Mode 7 perspective and
+            window effects without waking the CPU on every line.
+          </p>
+
+          <div class="grid grid-2">
+            <div class="card">
+              <span class="tag">DMA</span>
+              <h4>Triggered by <code>$420B</code></h4>
+              <p>
+                A block transfer that runs immediately. Used for loading VRAM,
+                CGRAM and OAM during blanking.
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">HDMA</span>
+              <h4>Triggered by <code>$420C</code></h4>
+              <p>
+                A table-driven transfer that repeats once per scanline. Used for
+                raster effects and mid-frame register changes.
+              </p>
+            </div>
+          </div>
+
+          <p>
+            For the emulator, DMA is a timing feature before it is a data feature.
+            It must interact correctly with interrupts, the CPU's halt state, the
+            bus wait states and the PPU's access windows. Implementing it as
+            "copy this array instantly" will break games that depend on when the
+            transfer happens.
+          </p>
+        </section>
+
+        <section id="apu" class="section">
+          <div class="section-head">
+            <span class="section-num">08</span>
+            <h2>The APU: a computer inside a computer</h2>
+          </div>
+
+          <p>
+            The audio subsystem is a separate computer. It has its own CPU (the
+            SPC700), its own 64 KB of ARAM, three timers, a DSP that synthesizes eight
+            voices, and a 64-byte boot ROM called the IPL. The main CPU talks to it
+            through four registers at <code>$2140&ndash;$2143</code>, and nothing
+            else.
+          </p>
+
+          <h3>The boot protocol</h3>
+          <p>
+            On power-on, the IPL clears the first page of ARAM and waits for the main
+            CPU to upload an audio driver. The protocol uses the four communication
+            ports as a handshake: the SPC700 signals readiness, the CPU sends a block
+            and an index, and the SPC700 acknowledges. Only after the driver is
+            uploaded does the SPC700 start executing game audio code.
+          </p>
+          <p>
+            The IPL ROM itself is Nintendo code. Your options are to require a
+            user-provided dump, use a clean-room replacement with the same protocol,
+            or emulate the protocol at a high level. See the legal section.
+          </p>
+
+          <h3>The SPC700</h3>
+          <p>
+            An 8-bit CPU with its own instruction set, 1.024 MHz clock, 64 KB address
+            space, PSW flags and a stack. It is simpler than the 65C816 but still has
+            its own addressing modes, timers and I/O ports. It runs the audio driver,
+            sequences music and writes to DSP registers.
+          </p>
+
+          <h3>The DSP</h3>
+          <div class="grid grid-2">
+            <div class="card">
+              <span class="tag">Synthesis</span>
+              <h4>Eight voices at 32 kHz</h4>
+              <p>
+                Each voice plays a BRR-compressed sample with pitch, volume,
+                ADSR/GAIN envelope, sample loop and optional pitch modulation.
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">Mix</span>
+              <h4>Echo, noise and stereo</h4>
+              <p>
+                A noise generator, an 8-tap FIR echo buffer in ARAM, and per-voice
+                left/right volume feed the final stereo mix.
+              </p>
+            </div>
+          </div>
+
+          <p>
+            BRR (Bit Rate Reduction) stores samples in 9-byte blocks: one header plus
+            eight 4-bit nibbles. The DSP decodes them on the fly, applies the
+            envelope and mixes. The output is 32 kHz stereo; the frontend must
+            resample it to the host rate (44.1 or 48 kHz) with a ring buffer and,
+            ideally, dynamic rate control to avoid underruns and crackles.
+          </p>
+
+          <div class="callout">
+            <span class="label">Synchronization reminder</span>
+            <p>
+              The DSP advances with the SPC700, which advances against the main CPU
+              through a relative scheduler. Audio is therefore not a separate
+              "play a sample" subsystem; it is another timed component that must see
+              register writes at the right cycle.
+            </p>
+          </div>
+        </section>
+
+        <section id="cartridges" class="section">
+          <div class="section-head">
+            <span class="section-num">09</span>
+            <h2>Cartridges and coprocessors</h2>
+          </div>
+
+          <p>
+            A ROM image is not just a blob of code. It has a header at
+            <code>$FFC0&ndash;$FFFF</code> (in the ROM's address space) describing the
+            title, mapping mode, ROM size, SRAM size, region and vectors. The two main
+            mapping families are <strong>LoROM</strong> (32 KB banks mapped into the
+            upper half of each bank) and <strong>HiROM</strong> (full 64 KB banks).
+            ExHiROM extends the address space further.
+          </p>
+
+          <p>
+            The cartridge is also where coprocessors live. Some games put a whole
+            second processor or a math chip in the cart, and the emulator must
+            implement that chip or gracefully refuse to run the game. This is where
+            scope explodes.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Chip</th>
+                  <th scope="col">What it does</th>
+                  <th scope="col">Example</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>DSP-1 / 1B / 2 / 3 / 4</td><td>Math coprocessor (3D, transforms)</td><td>Pilotwings, Mario Kart</td></tr>
+                <tr><td>SuperFX (GSU-1/2)</td><td>Custom RISC CPU for 3D polygons</td><td>Star Fox, Yoshi's Island</td></tr>
+                <tr><td>SA-1</td><td>Second 65C816 with its own memory map</td><td>Super Mario RPG</td></tr>
+                <tr><td>Cx4</td><td>Math and wireframe assistance</td><td>Mega Man X2 / X3</td></tr>
+                <tr><td>S-DD1</td><td>On-the-fly ROM decompression</td><td>Star Ocean</td></tr>
+                <tr><td>SPC7110</td><td>Decompression and real-time clock</td><td>Far East of Eden Zero</td></tr>
+                <tr><td>ST010 / ST011</td><td>DSP for racing and strategy games</td><td>F1 ROC II, Hayazashi Nidan</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>
+            Strategy: get the base console right first. Add coprocessors in order of
+            payoff, and decide early whether you want LLE (implement the chip) or HLE
+            (intercept its interface). MSU-1, Satellaview and the Super Game Boy are
+            separate projects, not core requirements.
+          </p>
+        </section>
+
+        <section id="testing" class="section">
+          <div class="section-head">
+            <span class="section-num">10</span>
+            <h2>Proving that it works</h2>
+          </div>
+
+          <p>
+            There is no perfect oracle. Even the most accurate emulator is an
+            approximation, and commercial games exercise only a fraction of the
+            hardware. The practical answer is a layered test strategy: unit tests for
+            pure logic, hardware test ROMs for behavior, frame hashes for rendering,
+            and differential testing against a reference emulator for everything else.
+          </p>
+
+          <div class="grid grid-2">
+            <div class="card">
+              <span class="tag">Level 1</span>
+              <h4>Unit tests</h4>
+              <p>
+                Address decoding, flag logic, tile decoding, BRR decoding, scheduler
+                math. Fast, deterministic, no ROM required.
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">Level 2</span>
+              <h4>Hardware test ROMs</h4>
+              <p>
+                Run on real hardware and on your emulator. Compare register/memory
+                state, not just "it printed PASS".
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">Level 3</span>
+              <h4>Frame and audio hashes</h4>
+              <p>
+                Run a deterministic ROM, hash the framebuffer or audio buffer at
+                known frames, and fail CI when the hash changes unexpectedly.
+              </p>
+            </div>
+            <div class="card">
+              <span class="tag">Level 4</span>
+              <h4>Differential testing</h4>
+              <p>
+                Run the same input movie in your emulator and in Mesen/bsnes, then
+                compare traces, frames and audio. Divergence points to the bug.
+              </p>
+            </div>
+          </div>
+
+          <h3>Build the debugger you will need</h3>
+          <p>
+            A disassembler, a trace log with PC/registers/cycles, breakpoints on
+            memory access, and viewers for VRAM, CGRAM, OAM and the tilemaps are not
+            luxuries. They are the difference between finding a bug in minutes and
+            staring at a black screen for a weekend.
+          </p>
+          <p>
+            Established tools to compare against:
+            <a href="https://github.com/nesdev-org/MesenCE" target="_blank" rel="noopener noreferrer">Mesen</a>
+            (excellent debugger),
+            <a href="https://github.com/undisbeliever/bsnes-plus" target="_blank" rel="noopener noreferrer">bsnes-plus</a>
+            and <a href="https://problemkaputt.de/sns.htm" target="_blank" rel="noopener noreferrer">no$sns</a>.
+          </p>
+
+          <div class="callout warn">
+            <span class="label">Debugging order</span>
+            <p>
+              Never start with a commercial game. Start with test ROMs, then a
+              homebrew that paints a solid color, then backgrounds, then sprites, then
+              scrolling, then audio. Each step gives you a smaller search space.
+            </p>
+          </div>
+        </section>
+
+        <section id="legal" class="section">
+          <div class="section-head">
+            <span class="section-num">11</span>
+            <h2>ROMs, firmware, and the legal line</h2>
+          </div>
+
+          <p>
+            An emulator is legal in most jurisdictions; distributing copyrighted ROMs
+            is not. The emulator should load ROMs provided by the user and must not
+            bundle game images, firmware dumps or keys.
+          </p>
+
+          <p>
+            The SNES has no general BIOS, but the SPC700 has a 64-byte IPL boot ROM.
+            It is Nintendo code. The common approaches are:
+          </p>
+          <ul>
+            <li>Require the user to supply a dump, like a BIOS file.</li>
+            <li>
+              Ship a clean-room IPL that implements the same protocol, such as
+              <a href="https://github.com/stackblender/snes-spc700-boot-rom" target="_blank" rel="noopener noreferrer">snes-spc700-boot-rom</a>.
+            </li>
+            <li>Emulate the boot protocol at a high level instead of executing the ROM.</li>
+          </ul>
+          <p>
+            Coprocessor firmware (DSP-1, SuperFX, SA-1) raises the same questions.
+            This is not legal advice; if the project is distributed commercially,
+            review the licenses and firmware policy with a lawyer.
+          </p>
+        </section>
+
+        <section id="glossary" class="section">
+          <div class="section-head">
+            <span class="section-num">12</span>
+            <h2>Glossary</h2>
+          </div>
+
+          <dl class="glossary">
+            <div><dt>Bus</dt><dd>The shared path through which the CPU reads and writes memory and devices.</dd></div>
+            <div><dt>Open bus</dt><dd>The last value driven on the data bus, returned by unmapped reads.</dd></div>
+            <div><dt>Master cycle</dt><dd>The finest common time unit, derived from the 21.477 MHz oscillator.</dd></div>
+            <div><dt>Dot</dt><dd>One PPU pixel period: four master cycles.</dd></div>
+            <div><dt>Scanline</dt><dd>One horizontal line of video: 341 dots, or 1364 master cycles.</dd></div>
+            <div><dt>VBlank</dt><dd>The vertical blanking period where the CPU can safely access VRAM and OAM.</dd></div>
+            <div><dt>NMI / IRQ</dt><dd>Non-maskable and maskable interrupts used for vblank and raster timing.</dd></div>
+            <div><dt>DMA</dt><dd>Direct memory access: a block transfer that steals CPU cycles.</dd></div>
+            <div><dt>HDMA</dt><dd>Per-scanline DMA driven by a table, used for raster effects.</dd></div>
+            <div><dt>MMIO</dt><dd>Memory-mapped I/O: hardware registers exposed as addresses.</dd></div>
+            <div><dt>LLE / HLE</dt><dd>Low-level emulation (model the hardware) vs high-level emulation (model the interface).</dd></div>
+            <div><dt>Dynarec</dt><dd>Translating guest instructions to host instructions at runtime for speed.</dd></div>
+            <div><dt>Scheduler</dt><dd>The component that decides which emulated processor runs next.</dd></div>
+            <div><dt>Save state</dt><dd>A serialized snapshot of the entire emulated machine, including timing state.</dd></div>
+            <div><dt>BRR</dt><dd>Bit Rate Reduction: the SNES compressed sample format.</dd></div>
+            <div><dt>ADSR</dt><dd>Attack, Decay, Sustain, Release: the volume envelope of a DSP voice.</dd></div>
+            <div><dt>IPL</dt><dd>Initial Program Loader: the 64-byte SPC700 boot ROM and its upload protocol.</dd></div>
+            <div><dt>LoROM / HiROM</dt><dd>The two main cartridge-to-address-space mapping schemes.</dd></div>
+          </dl>
+        </section>
+
+        <section id="references" class="section">
+          <div class="section-head">
+            <span class="section-num">13</span>
+            <h2>References</h2>
+          </div>
+
+          <p>
+            Keep these open while implementing. The hardware references are the source
+            of truth; the emulator write-ups explain how other people turned that
+            hardware into software.
+          </p>
+
+          <div class="study-path">
+            <h3>If you only read five things</h3>
+            <ol>
+              <li>
+                <a href="https://emudev.de/q00-snes/" target="_blank" rel="noopener noreferrer">emudev.de — SNES series</a>:
+                the best guided tour from 65816 to PPU, DMA, SPC700 and schedulers.
+              </li>
+              <li>
+                <a href="https://problemkaputt.de/fullsnes.htm" target="_blank" rel="noopener noreferrer">fullsnes</a>:
+                the register dictionary you will keep coming back to.
+              </li>
+              <li>
+                <a href="https://bsnes.org/articles/schedulers/" target="_blank" rel="noopener noreferrer">Schedulers</a>:
+                how to keep independent clocks honest.
+              </li>
+              <li>
+                <a href="https://github.com/SingleStepTests/65816" target="_blank" rel="noopener noreferrer">SingleStepTests/65816</a>:
+                the fastest way to know your CPU is correct.
+              </li>
+              <li>
+                <a href="https://arstechnica.com/gaming/2021/06/how-snes-emulators-got-a-few-pixels-from-complete-perfection/" target="_blank" rel="noopener noreferrer">How SNES emulators got a few pixels from perfection</a>:
+                why the PPU is the last frontier.
+              </li>
+            </ol>
+          </div>
+
+          <div class="ref-toolbar">
+            <input
+              id="ref-filter"
+              type="search"
+              placeholder="Filter references by name, topic or domain…"
+              aria-label="Filter references"
+            />
+            <span class="ref-count" id="ref-count" aria-live="polite"></span>
+          </div>
+
+          <div class="ref-group">
+            <h3>Hardware and registers</h3>
+            <div class="refs">
+              <a class="ref" href="https://problemkaputt.de/fullsnes.htm" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">fullsnes — nocash SNES specifications</span>
+                <span class="ref-desc">The most complete register-level reference, with memory maps, timing notes and hardware quirks.</span>
+                <span class="ref-url">problemkaputt.de/fullsnes.htm</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SNESdev Wiki</span>
+                <span class="ref-desc">Active community wiki for PPU, DMA, SPC700, memory map and cartridge hardware.</span>
+                <span class="ref-url">snes.nesdev.org</span>
+              </a>
+              <a class="ref" href="https://sneslab.net/wiki/Main_Page" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SnesLab Wiki</span>
+                <span class="ref-desc">Well-organized pages on the IPL, CPU, memory and the fullsnes mirror.</span>
+                <span class="ref-url">sneslab.net/wiki</span>
+              </a>
+              <a class="ref" href="https://archive.org/details/SNESDevManual" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Official SNES Development Manual</span>
+                <span class="ref-desc">Nintendo's original documentation. Authoritative, dense and hard to navigate.</span>
+                <span class="ref-url">archive.org/details/SNESDevManual</span>
+              </a>
+              <a class="ref" href="https://www.sneslab.net/wiki/Anomie" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Anomie's SNES documentation</span>
+                <span class="ref-desc">Precise explanations of registers, timing and 65C816 behavior.</span>
+                <span class="ref-url">sneslab.net/wiki/Anomie</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/wiki/Memory_map" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Memory map</span>
+                <span class="ref-desc">The 24-bit address space, mirrors, system area and cartridge regions.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/Memory_map</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>CPU — 65C816</h3>
+            <div class="refs">
+              <a class="ref" href="https://github.com/gilligan/snesdev/blob/master/docs/65816.txt" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">65C816 reference (snesdev docs)</span>
+                <span class="ref-desc">Instruction set, addressing modes, flags and native/emulation mode differences.</span>
+                <span class="ref-url">github.com/gilligan/snesdev</span>
+              </a>
+              <a class="ref" href="https://github.com/SingleStepTests/65816" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SingleStepTests/65816</span>
+                <span class="ref-desc">JSON tests with full CPU state and bus activity, 20,000 runs per opcode.</span>
+                <span class="ref-url">github.com/SingleStepTests/65816</span>
+              </a>
+              <a class="ref" href="https://github.com/gilyon/snes-tests" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">gilyon/snes-tests</span>
+                <span class="ref-desc">Comprehensive 65C816 and SPC700 test ROMs, including undocumented behaviors.</span>
+                <span class="ref-url">github.com/gilyon/snes-tests</span>
+              </a>
+              <a class="ref" href="https://github.com/PeterLemon/SNES" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">PeterLemon/SNES</span>
+                <span class="ref-desc">Per-instruction CPU tests that report failures on screen.</span>
+                <span class="ref-url">github.com/PeterLemon/SNES</span>
+              </a>
+              <a class="ref" href="https://en.wikibooks.org/wiki/Super_NES_Programming" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Super NES Programming (Wikibooks)</span>
+                <span class="ref-desc">A practical introduction to 65816 assembly and SNES hardware from the programmer's side.</span>
+                <span class="ref-url">en.wikibooks.org</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Video — PPU</h3>
+            <div class="refs">
+              <a class="ref" href="https://snes.nesdev.org/wiki/PPU_registers" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">PPU registers</span>
+                <span class="ref-desc">Every register from $2100 to $213F with bit layouts and behavior.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/PPU_registers</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/wiki/Mode_7" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Mode 7</span>
+                <span class="ref-desc">The affine matrix, tilemap layout, wrapping and fill rules.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/Mode_7</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/wiki/Sprites" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Sprites and OAM</span>
+                <span class="ref-desc">Sprite sizes, priority, per-line limits and OAM layout.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/Sprites</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/wiki/Timing" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Video timing</span>
+                <span class="ref-desc">Dots, scanlines, blanking, H/V counters and frame structure.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/Timing</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Audio — APU</h3>
+            <div class="refs">
+              <a class="ref" href="https://github.com/gilligan/snesdev/blob/master/docs/spc700.txt" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SPC700 reference</span>
+                <span class="ref-desc">Instruction set, registers, timers and memory-mapped I/O.</span>
+                <span class="ref-url">github.com/gilligan/snesdev</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/wiki/SPC700" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SPC700 (SNESdev Wiki)</span>
+                <span class="ref-desc">The audio CPU, its ports, timers and boot handshake.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/SPC700</span>
+              </a>
+              <a class="ref" href="https://snes.nesdev.org/wiki/DSP" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">S-DSP</span>
+                <span class="ref-desc">Voices, BRR decoding, envelopes, echo, noise and the mixer.</span>
+                <span class="ref-url">snes.nesdev.org/wiki/DSP</span>
+              </a>
+              <a class="ref" href="https://github.com/blarggs-audio-libraries/snes_spc" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">blargg's snes_spc</span>
+                <span class="ref-desc">A cycle-accurate SPC700 + DSP implementation. Excellent reference, LGPL.</span>
+                <span class="ref-url">github.com/blarggs-audio-libraries/snes_spc</span>
+              </a>
+              <a class="ref" href="https://www.sneslab.net/wiki/SPC700/IPL_ROM" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SPC700 IPL ROM</span>
+                <span class="ref-desc">What the 64-byte boot ROM does and how the upload protocol works.</span>
+                <span class="ref-url">sneslab.net/wiki/SPC700/IPL_ROM</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Emulator design</h3>
+            <div class="refs">
+              <a class="ref" href="https://emudev.de/q00-snes/" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">emudev.de — SNES series</span>
+                <span class="ref-desc">Step-by-step build log covering CPU, mapping, DMA, PPU, SPC700 and schedulers.</span>
+                <span class="ref-url">emudev.de/q00-snes</span>
+              </a>
+              <a class="ref" href="https://bsnes.org/articles/schedulers/" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Schedulers — bsnes</span>
+                <span class="ref-desc">Relative and absolute schedulers, with the SNES clock math worked out.</span>
+                <span class="ref-url">bsnes.org/articles/schedulers</span>
+              </a>
+              <a class="ref" href="https://archive.ares-emu.net/near.sh/articles/emulation/state-of-emulation-ii.html" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">State of Emulation II</span>
+                <span class="ref-desc">Near's account of accuracy vs compatibility, hacks and the limits of verification.</span>
+                <span class="ref-url">archive.ares-emu.net</span>
+              </a>
+              <a class="ref" href="https://arstechnica.com/gaming/2021/06/how-snes-emulators-got-a-few-pixels-from-complete-perfection/" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">How SNES emulators got a few pixels from perfection</span>
+                <span class="ref-desc">A readable history of SNES emulation and why the PPU remains the final frontier.</span>
+                <span class="ref-url">arstechnica.com</span>
+              </a>
+              <a class="ref" href="https://raddad772.github.io/2022/06/17/emulating-in-javascript.html" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Emulating the 65C816 with generated code</span>
+                <span class="ref-desc">Why 256 opcodes become ~1,280 variants and how to generate them.</span>
+                <span class="ref-url">raddad772.github.io</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Codebases to read</h3>
+            <div class="refs">
+              <a class="ref" href="https://github.com/ares-emulator/ares" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">ares</span>
+                <span class="ref-desc">Accuracy-focused, readable multi-system emulator descended from higan and bsnes.</span>
+                <span class="ref-url">github.com/ares-emulator/ares</span>
+              </a>
+              <a class="ref" href="https://github.com/bsnes-emu/bsnes" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">bsnes</span>
+                <span class="ref-desc">Performance-oriented SNES emulator with a long history of accuracy work.</span>
+                <span class="ref-url">github.com/bsnes-emu/bsnes</span>
+              </a>
+              <a class="ref" href="https://github.com/nesdev-org/MesenCE" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Mesen</span>
+                <span class="ref-desc">Multi-system emulator with the best debugger and very legible C# code.</span>
+                <span class="ref-url">github.com/nesdev-org/MesenCE</span>
+              </a>
+              <a class="ref" href="https://github.com/snes9xgit/snes9x" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Snes9x</span>
+                <span class="ref-desc">A pragmatic C++ implementation, useful for comparing design decisions.</span>
+                <span class="ref-url">github.com/snes9xgit/snes9x</span>
+              </a>
+              <a class="ref" href="https://github.com/iaddis/SNESticle" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SNESticle</span>
+                <span class="ref-desc">Small, readable codebase with a clear SPC700 and DSP implementation.</span>
+                <span class="ref-url">github.com/iaddis/SNESticle</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Test ROMs and validation</h3>
+            <div class="refs">
+              <a class="ref" href="https://gitlab.com/higan/snes-test-roms" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">higan/snes-test-roms</span>
+                <span class="ref-desc">A large collection of hardware test ROMs from many authors.</span>
+                <span class="ref-url">gitlab.com/higan/snes-test-roms</span>
+              </a>
+              <a class="ref" href="https://github.com/gilyon/snes-tests" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">gilyon/snes-tests</span>
+                <span class="ref-desc">Release ROMs plus generated expected values for CPU and SPC700 tests.</span>
+                <span class="ref-url">github.com/gilyon/snes-tests</span>
+              </a>
+              <a class="ref" href="https://github.com/SingleStepTests/65816" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SingleStepTests/65816</span>
+                <span class="ref-desc">Instruction-by-instruction JSON suite with bus activity, ideal for CI.</span>
+                <span class="ref-url">github.com/SingleStepTests/65816</span>
+              </a>
+              <a class="ref" href="https://github.com/PeterLemon/SNES" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">PeterLemon/SNES</span>
+                <span class="ref-desc">CPU and SPC700 tests organized by instruction.</span>
+                <span class="ref-url">github.com/PeterLemon/SNES</span>
+              </a>
+              <a class="ref" href="https://github.com/blarggs-audio-libraries/snes_spc" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">blargg's SPC tests</span>
+                <span class="ref-desc">The reference behavior suite for SPC700 and DSP timing.</span>
+                <span class="ref-url">github.com/blarggs-audio-libraries/snes_spc</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Debugging tools</h3>
+            <div class="refs">
+              <a class="ref" href="https://github.com/nesdev-org/MesenCE" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Mesen</span>
+                <span class="ref-desc">CPU/PPU debugger, trace logger and memory viewers. The best comparison target.</span>
+                <span class="ref-url">github.com/nesdev-org/MesenCE</span>
+              </a>
+              <a class="ref" href="https://github.com/undisbeliever/bsnes-plus" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">bsnes-plus</span>
+                <span class="ref-desc">A maintained bsnes fork with a mature debugger.</span>
+                <span class="ref-url">github.com/undisbeliever/bsnes-plus</span>
+              </a>
+              <a class="ref" href="https://problemkaputt.de/sns.htm" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">no$sns</span>
+                <span class="ref-desc">Alternative Windows debugger with strong low-level inspection tools.</span>
+                <span class="ref-url">problemkaputt.de/sns.htm</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="ref-group">
+            <h3>Firmware and legal</h3>
+            <div class="refs">
+              <a class="ref" href="https://www.sneslab.net/wiki/SPC700/IPL_ROM" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">SPC700 IPL ROM</span>
+                <span class="ref-desc">Technical description of the boot ROM and its handshake protocol.</span>
+                <span class="ref-url">sneslab.net/wiki/SPC700/IPL_ROM</span>
+              </a>
+              <a class="ref" href="https://github.com/stackblender/snes-spc700-boot-rom" target="_blank" rel="noopener noreferrer">
+                <span class="ref-title">Clean-room SPC700 boot ROM</span>
+                <span class="ref-desc">A GPLv3 reimplementation of the IPL protocol that emulators can ship.</span>
+                <span class="ref-url">github.com/stackblender/snes-spc700-boot-rom</span>
+              </a>
+            </div>
+          </div>
+
+          <p class="ref-empty" id="ref-empty" hidden>No references match that filter.</p>
+        </section>
+      </main>
+    </div>
+
+    <footer class="footer">
+      <div class="wrap footer-inner">
+        <span>emo · theory notes for a from-scratch SNES emulator</span>
+        <span>No ROMs or copyrighted firmware included.</span>
+      </div>
+    </footer>
+
+    <button id="back-top" class="back-top" type="button" aria-label="Back to top" hidden>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+
+    <script src="script.js" defer></script>
+  </body>
+</html>
