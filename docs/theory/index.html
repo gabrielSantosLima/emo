@@ -3,8 +3,6 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="alternate" hreflang="en" href="index.html" />
-    <link rel="alternate" hreflang="pt-BR" href="index.pt-BR.html" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235b3df5'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='700' fill='white' text-anchor='middle'%3Ee%3C/text%3E%3C/svg%3E"
@@ -40,76 +38,13 @@
             discipline of proving it right.
           </p>
           <ul class="meta">
-            <li>13 sections</li>
-            <li><span id="reading-time">~25 min read</span></li>
+            <li>14 sections</li>
+            <li><span id="reading-time">~35 min read</span></li>
             <li>Living document</li>
           </ul>
         </div>
         <div class="hero-side">
           <div class="hero-tools">
-            <div class="lang-switch" role="group" aria-label="Language">
-              <a
-                class="lang-link"
-                href="index.html"
-                hreflang="en"
-                title="English"
-                aria-current="page"
-              >
-                <span class="flag-pair">
-                  <svg class="flag" viewBox="0 0 24 16" aria-hidden="true">
-                    <rect width="24" height="16" fill="#b22234" />
-                    <g fill="#fff">
-                      <rect y="1.23" width="24" height="1.23" />
-                      <rect y="3.69" width="24" height="1.23" />
-                      <rect y="6.15" width="24" height="1.23" />
-                      <rect y="8.62" width="24" height="1.23" />
-                      <rect y="11.08" width="24" height="1.23" />
-                      <rect y="13.54" width="24" height="1.23" />
-                    </g>
-                    <rect width="10" height="8.62" fill="#3c3b6e" />
-                    <g fill="#fff">
-                      <circle cx="2" cy="1.8" r=".45" />
-                      <circle cx="5" cy="1.8" r=".45" />
-                      <circle cx="8" cy="1.8" r=".45" />
-                      <circle cx="3.5" cy="3.4" r=".45" />
-                      <circle cx="6.5" cy="3.4" r=".45" />
-                      <circle cx="2" cy="5" r=".45" />
-                      <circle cx="5" cy="5" r=".45" />
-                      <circle cx="8" cy="5" r=".45" />
-                      <circle cx="3.5" cy="6.6" r=".45" />
-                      <circle cx="6.5" cy="6.6" r=".45" />
-                    </g>
-                  </svg>
-                  <svg class="flag" viewBox="0 0 24 16" aria-hidden="true">
-                    <rect width="24" height="16" fill="#012169" />
-                    <path d="M0 0l24 16M24 0L0 16" stroke="#fff" stroke-width="3.2" />
-                    <path d="M0 0l24 16M24 0L0 16" stroke="#c8102e" stroke-width="1.4" />
-                    <path d="M12 0v16M0 8h24" stroke="#fff" stroke-width="5.4" />
-                    <path d="M12 0v16M0 8h24" stroke="#c8102e" stroke-width="3" />
-                  </svg>
-                </span>
-                <span>EN</span>
-              </a>
-              <a
-                class="lang-link"
-                href="index.pt-BR.html"
-                hreflang="pt-BR"
-                title="Português (Brasil)"
-              >
-                <svg class="flag" viewBox="0 0 24 16" aria-hidden="true">
-                  <rect width="24" height="16" fill="#009b3a" />
-                  <path d="M12 1.7 22.3 8 12 14.3 1.7 8Z" fill="#fedf00" />
-                  <circle cx="12" cy="8" r="3.7" fill="#002776" />
-                  <path
-                    d="M8.3 7.3c2.4-1.1 5.4-.6 7.4 1"
-                    stroke="#fff"
-                    stroke-width=".9"
-                    fill="none"
-                  />
-                </svg>
-                <span>PT</span>
-              </a>
-            </div>
             <button
               id="theme-toggle"
               class="icon-btn"
@@ -151,6 +86,163 @@
       </aside>
 
       <main id="main">
+        <section id="primer" class="section">
+          <div class="section-head">
+            <span class="section-num">00</span>
+            <h2>Hardware vocabulary for beginners</h2>
+          </div>
+
+          <p>
+            If you have written software but never stared at a schematic, the
+            vocabulary of emulation can feel like a wall of acronyms. This section is
+            the minimum you need: what a clock is, what a register is, what a bus is,
+            and why the word "timing" appears in every paragraph. Every term is
+            expanded again in the <a href="#glossary">glossary</a>.
+          </p>
+
+          <div class="callout">
+            <span class="label">How to read this guide</span>
+            <p>
+              Hardware claims follow the official SNES development manual and
+              fullsnes. General computer architecture follows Patterson &amp; Hennessy
+              <a class="cite" href="#bib-2">[2]</a> and Harris &amp; Harris
+              <a class="cite" href="#bib-3">[3]</a>; emulation and virtualization
+              follow Smith &amp; Nair <a class="cite" href="#bib-1">[1]</a>; timing
+              and scheduling follow Liu <a class="cite" href="#bib-5">[5]</a> and
+              Banks et al. <a class="cite" href="#bib-6">[6]</a>. Numbers in square
+              brackets point to the Foundations list in the references.
+            </p>
+          </div>
+
+          <h3>A clock is a metronome, not a speed limit</h3>
+          <p>
+            A <dfn>clock</dfn> is a signal that alternates on and off at a fixed
+            rate. One complete on/off cycle is a <dfn>cycle</dfn>. The rate is the
+            <dfn>frequency</dfn>, measured in hertz (Hz): one hertz means one cycle
+            per second. Frequency and period are reciprocals: a 1 MHz clock has a
+            period of one microsecond. The SNES master clock is 21.477272 MHz, so one
+            master cycle lasts about 46.6 nanoseconds
+            <a class="cite" href="#bib-2">[2]</a>.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Think of a factory conveyor belt that moves one slot every tick. The
+              belt does not decide how fast each worker is; it only says when the next
+              slot arrives. A component that acts every sixth slot runs at one sixth
+              of the belt's rate. That is exactly what a clock divider does.
+            </p>
+          </div>
+
+          <h3>Bits, bytes, words and hex</h3>
+          <p>
+            A <dfn>bit</dfn> is one binary digit, 0 or 1. Eight bits form a
+            <dfn>byte</dfn>, which can hold 0–255 (0x00–0xFF in hexadecimal). A
+            <dfn>word</dfn> is the natural chunk a processor works with; on the 65C816
+            it is 16 bits, but the CPU can also work with 8-bit values. Hexadecimal is
+            a compact way to write binary: one hex digit is four bits, so two hex
+            digits are one byte. Addresses such as <code>$2100</code> use
+            <code>$</code> to mean "hexadecimal".
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Quantity</th>
+                  <th scope="col">Bits</th>
+                  <th scope="col">Range</th>
+                  <th scope="col">Example</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Nibble</td><td class="num">4</td><td class="num">0–15</td><td><code>0xF</code></td></tr>
+                <tr><td>Byte</td><td class="num">8</td><td class="num">0–255</td><td><code>0x7E</code></td></tr>
+                <tr><td>16-bit word</td><td class="num">16</td><td class="num">0–65,535</td><td><code>0x2100</code></td></tr>
+                <tr><td>24-bit address</td><td class="num">24</td><td class="num">0–16,777,215</td><td><code>0x7E0000</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Registers are the control panels</h3>
+          <p>
+            A <dfn>register</dfn> is a small storage cell inside a chip. Some
+            registers live inside the CPU (accumulator, index registers, program
+            counter); others belong to peripherals and are exposed at fixed addresses.
+            When a register is reachable through the address space, it is called
+            <dfn>memory-mapped I/O</dfn> (MMIO). Writing to a register is like
+            pressing a button on a control panel; reading one can return a measurement
+            or acknowledge an event.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Imagine a building directory. Room <code>$2100</code> is not a storage
+              closet; it is the light switch for the whole floor. Reading the
+              directory gives you a status; writing to it changes the building. In an
+              emulator, the bus is the directory and every device is a room with
+              behavior.
+            </p>
+          </div>
+
+          <h3>The bus is a shared road</h3>
+          <p>
+            A <dfn>bus</dfn> is the set of wires shared by the CPU and its
+            peripherals. The <dfn>address bus</dfn> says where the access goes; the
+            <dfn>data bus</dfn> carries the value. Only one device may drive the data
+            bus at a time, which is why the system needs address decoding and why
+            unmapped reads return the last value on the bus
+            (<dfn>open bus</dfn>) <a class="cite" href="#bib-2">[2]</a>.
+          </p>
+
+          <h3>Interrupts are doorbells</h3>
+          <p>
+            An <dfn>interrupt</dfn> is a signal that makes the CPU stop its current
+            instruction stream and jump to a handler. A maskable interrupt
+            (<dfn>IRQ</dfn>) can be ignored by setting a flag; a non-maskable
+            interrupt (<dfn>NMI</dfn>) cannot. The address of the handler is stored
+            in a <dfn>vector</dfn>. The SNES uses NMI for vertical blanking and IRQ
+            for raster and timer events.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              IRQ is a phone call: you can let it ring while you finish a sentence.
+              NMI is the fire alarm: you drop everything and go to the exit. Both
+              interrupt the current task, but only one is optional.
+            </p>
+          </div>
+
+          <h3>Emulation, simulation and determinism</h3>
+          <p>
+            An <dfn>emulator</dfn> reproduces the observable behavior of one machine
+            on another. A <dfn>simulator</dfn> models a system to study it; the
+            distinction is blurry, but emulators are usually built to run the original
+            software, not to predict physical behavior
+            <a class="cite" href="#bib-1">[1]</a>. A <dfn>deterministic</dfn>
+            emulator produces the same output for the same input every time.
+            Determinism is what makes save states, rewind, netplay and automated tests
+            possible.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              A deterministic emulator is sheet music: the same score produces the
+              same performance. A non-deterministic one is jazz: beautiful, but you
+              cannot rewind to the same chord. Tests and save states need sheet music.
+            </p>
+          </div>
+
+          <p class="terms-note">
+            If a sentence feels dense, jump to the <a href="#glossary">glossary</a>
+            first. It defines every term used in this guide, from "bank" to "underrun".
+          </p>
+        </section>
+
         <section id="why" class="section">
           <div class="section-head">
             <span class="section-num">01</span>
@@ -203,6 +295,15 @@
             </div>
           </div>
 
+          <p>
+            The performance cost of interpretation can be reduced with
+            <dfn>dynamic binary translation</dfn> (dynarec), which translates guest
+            instructions into host instructions at runtime
+            <a class="cite" href="#bib-10">[10]</a>. The layered view of one machine
+            running another goes back to the early virtual-machine literature
+            <a class="cite" href="#bib-11">[11]</a>.
+          </p>
+
           <div class="callout">
             <span class="label">Key distinction</span>
             <p>
@@ -215,11 +316,23 @@
             </p>
           </div>
 
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              An emulator is a flight simulator for hardware. It does not need real
+              wind or real fuel; it needs the pilot's controls to produce the same
+              instrument readings at the same moments. If the altimeter lags by half a
+              second, the simulation is useless even if the scenery looks perfect.
+            </p>
+          </div>
+
           <p>
             Finally, determinism is a feature. If the core depends only on emulated
             time, not on wall-clock time or randomness, then save states, rewind,
             netplay, automated tests and bug reports all become tractable. Treat
-            determinism as a design constraint from day one.
+            determinism as a design constraint from day one. Deterministic replay is
+            also a well-studied technique in systems research
+            <a class="cite" href="#bib-13">[13]</a>.
           </p>
         </section>
 
@@ -231,13 +344,139 @@
 
           <p>
             Every useful unit of time in the SNES is derived from a crystal
-            oscillator. The main oscillator feeds the CPU and the PPU. The audio
-            subsystem has its <strong>own</strong> oscillator, which is the root cause
-            of most synchronization pain.
+            oscillator. But "derived" does not mean "equal": the crystal is a
+            reference, and each component sees a divided version of it. The CPU and
+            the PPU share one domain. The audio subsystem has its <strong>own</strong>
+            oscillator, and that single design choice shapes the entire scheduler.
           </p>
+
+          <h3>Two oscillators, two time domains</h3>
+          <p>
+            The main crystal is not a CPU clock. It is the raw reference that the
+            video and CPU clocks are divided from: the S-CPU takes one cycle every six
+            master cycles, and the PPU produces one dot every four. The audio crystal
+            is independent: it feeds the SPC700 and the DSP, and it has no integer
+            relationship with the video crystal.
+          </p>
+
+          <figure class="figure">
+            <div class="figure-head">
+              <span class="figure-title">Clock tree</span>
+              <span class="figure-tag">Fig. 1</span>
+            </div>
+            <svg
+              class="fig-svg"
+              viewBox="0 0 900 470"
+              role="img"
+              aria-label="Clock tree: one crystal derives the CPU and PPU clocks; a separate APU crystal derives the SPC700 and DSP clocks."
+            >
+              <defs>
+                <marker
+                  id="arrow-clock-en"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 10 5 0 10Z" fill="var(--accent)" />
+                </marker>
+                <marker
+                  id="arrow-audio-en"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 10 5 0 10Z" fill="var(--accent-2)" />
+                </marker>
+              </defs>
+
+              <text x="20" y="22" class="fig-label">CPU + video clock domain</text>
+              <rect x="20" y="40" width="220" height="76" rx="10" class="fig-box-accent" />
+              <text x="130" y="70" text-anchor="middle" class="fig-title">Main crystal</text>
+              <text x="130" y="92" text-anchor="middle" class="fig-sub">21.477272 MHz (NTSC)</text>
+
+              <rect x="330" y="20" width="250" height="64" rx="10" class="fig-box" />
+              <text x="455" y="46" text-anchor="middle" class="fig-title">S-CPU</text>
+              <text x="455" y="67" text-anchor="middle" class="fig-sub">÷ 6 → 3.579545 MHz</text>
+
+              <rect x="330" y="104" width="250" height="64" rx="10" class="fig-box" />
+              <text x="455" y="130" text-anchor="middle" class="fig-title">PPU dot clock</text>
+              <text x="455" y="151" text-anchor="middle" class="fig-sub">÷ 4 → 5.369318 MHz</text>
+
+              <rect x="660" y="62" width="220" height="90" rx="10" class="fig-box-accent" />
+              <text x="770" y="90" text-anchor="middle" class="fig-title">PPU frame</text>
+              <text x="770" y="110" text-anchor="middle" class="fig-sub">341 dots × 262 lines</text>
+              <text x="770" y="130" text-anchor="middle" class="fig-sub">≈ 60.0985 Hz</text>
+
+              <path d="M240 78 H285 V52 H330" class="fig-accent-line" marker-end="url(#arrow-clock-en)" />
+              <path d="M285 78 V136 H330" class="fig-accent-line" marker-end="url(#arrow-clock-en)" />
+              <circle cx="285" cy="78" r="3" class="fig-dot-accent" />
+              <path d="M580 136 H620 V107 H660" class="fig-accent-line" marker-end="url(#arrow-clock-en)" />
+
+              <text x="20" y="304" class="fig-label">Audio clock domain (independent)</text>
+              <rect x="20" y="320" width="220" height="76" rx="10" class="fig-box-warm" />
+              <text x="130" y="350" text-anchor="middle" class="fig-title">APU crystal</text>
+              <text x="130" y="372" text-anchor="middle" class="fig-sub">24.576 MHz</text>
+
+              <rect x="330" y="300" width="250" height="64" rx="10" class="fig-box" />
+              <text x="455" y="326" text-anchor="middle" class="fig-title">SPC700</text>
+              <text x="455" y="347" text-anchor="middle" class="fig-sub">÷ 24 → 1.024 MHz</text>
+
+              <rect x="330" y="384" width="250" height="64" rx="10" class="fig-box" />
+              <text x="455" y="410" text-anchor="middle" class="fig-title">S-DSP</text>
+              <text x="455" y="431" text-anchor="middle" class="fig-sub">÷ 768 → 32 kHz</text>
+
+              <rect x="660" y="342" width="220" height="90" rx="10" class="fig-box-warm" />
+              <text x="770" y="370" text-anchor="middle" class="fig-title">Audio output</text>
+              <text x="770" y="390" text-anchor="middle" class="fig-sub">8 voices</text>
+              <text x="770" y="410" text-anchor="middle" class="fig-sub">32 kHz stereo</text>
+
+              <path d="M240 358 H285 V332 H330" class="fig-warm-line" marker-end="url(#arrow-audio-en)" />
+              <path d="M285 358 V416 H330" class="fig-warm-line" marker-end="url(#arrow-audio-en)" />
+              <circle cx="285" cy="358" r="3" class="fig-dot-warm" />
+              <path d="M580 416 H620 V387 H660" class="fig-warm-line" marker-end="url(#arrow-audio-en)" />
+            </svg>
+            <figcaption class="figcaption">
+              <strong>Two crystal domains.</strong> The CPU and PPU are integer
+              divisions of one crystal, so their ratio is exact. The APU is a separate
+              computer with its own clock, which is why it needs a scheduler instead of
+              a fixed ratio.
+            </figcaption>
+          </figure>
+
+          <p>
+            Because the CPU and PPU share a crystal, their relationship is exact: six
+            master cycles per CPU cycle and four per dot. An emulator can advance both
+            with integer arithmetic and never drift. The APU is the opposite: 24.576
+            MHz and 21.477272 MHz have no useful common divisor, so no single global
+            tick can drive both without correction. That is the subject of the next
+            section.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Picture two factories. The first has one conveyor belt and two stations:
+              the CPU station acts every sixth slot, the PPU station every fourth. The
+              second factory has its own belt running at a different speed. As long as
+              each factory is internally consistent, its workers never miss a slot —
+              but coordinating the two factories requires a shared ledger, not a
+              single global belt.
+            </p>
+          </div>
 
           <div class="timing" aria-labelledby="timing-title">
             <h3 id="timing-title" style="margin-top: 0">Timing explorer</h3>
+            <p class="hint" style="margin: 0 0 12px">
+              The same numbers the emulator should derive from its constants. Switch
+              standards and notice what changes: the master clock, the derived rates,
+              the line count and the frame rate.
+            </p>
             <div class="segmented" role="group" aria-label="Video standard">
               <button type="button" data-std="ntsc" aria-pressed="true">NTSC</button>
               <button type="button" data-std="pal" aria-pressed="false">PAL</button>
@@ -257,13 +496,169 @@
             <p class="hint" id="timing-note"></p>
           </div>
 
+          <h3>From master cycles to a frame</h3>
           <p>
-            A frame is a grid: <strong>scanlines</strong> stacked vertically, each one
-            divided into <strong>dots</strong> (PPU pixels). One dot lasts four master
-            cycles. The CPU does not run on dots; it runs on memory accesses that cost
-            6, 8 or 12 master cycles depending on the region being touched. That is
-            why the CPU is described as roughly 3.58 MHz even though the master clock
-            is 21.48 MHz.
+            The PPU counts in <strong>dots</strong>, not pixels. A scanline is 341
+            dots long, and each dot lasts four master cycles, so one line is 1364
+            master cycles. Only the first 256 dots are visible; the remaining 85 are
+            horizontal blanking. A frame is 262 lines on NTSC (312 on PAL). The first
+            224 lines are visible (239 in overscan), and the rest is vertical
+            blanking. The NMI used by most game loops fires at the start of that
+            blanking period <a class="cite" href="#bib-9">[9]</a><a class="cite" href="#bib-12">[12]</a>.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Think of a frame as a page of text. A scanline is one line of text, a dot
+              is one character, and horizontal blanking is the margin between lines.
+              Vertical blanking is the page break: the printer is no longer putting ink
+              on the page, so the CPU has a safe window to replace the paper, swap the
+              font, or change the layout before the next page starts.
+            </p>
+          </div>
+
+          <div class="figure-grid">
+            <figure class="figure-card">
+              <div class="figure-head">
+                <span class="figure-title">Frame anatomy</span>
+                <span class="figure-tag">Fig. 2</span>
+              </div>
+              <svg
+                class="fig-svg"
+                viewBox="0 0 420 400"
+                role="img"
+                aria-label="Frame anatomy: 262 scanlines, 224 visible, 38 vertical blanking lines; NMI starts at vertical blanking."
+              >
+                <rect x="110" y="30" width="100" height="274" rx="4" class="fig-box-accent" />
+                <rect x="110" y="304" width="100" height="46" rx="4" class="fig-box" />
+                <text x="160" y="155" text-anchor="middle" class="fig-title">224</text>
+                <text x="160" y="175" text-anchor="middle" class="fig-sub">visible</text>
+                <text x="160" y="191" text-anchor="middle" class="fig-sub">lines</text>
+                <text x="160" y="324" text-anchor="middle" class="fig-sub">vblank</text>
+                <text x="160" y="340" text-anchor="middle" class="fig-sub">≈ 38 lines</text>
+
+                <path d="M85 30 V350" class="fig-line" />
+                <path d="M80 30 H90 M80 350 H90" class="fig-line" />
+                <text
+                  x="68"
+                  y="190"
+                  text-anchor="middle"
+                  class="fig-label"
+                  transform="rotate(-90 68 190)"
+                >
+                  262 lines (NTSC)
+                </text>
+
+                <path d="M210 30 H240" class="fig-line" />
+                <text x="248" y="34" class="fig-sub">frame start (line 0)</text>
+                <path d="M210 304 H240" class="fig-line" />
+                <text x="248" y="300" class="fig-sub">vblank starts</text>
+                <text x="248" y="316" class="fig-sub">NMI fires here</text>
+                <path d="M210 350 H240" class="fig-line" />
+                <text x="248" y="354" class="fig-sub">frame end (line 261)</text>
+
+                <text x="110" y="380" class="fig-sub">1 line = 1364 master cycles</text>
+              </svg>
+              <figcaption class="figcaption">
+                <strong>NTSC frame anatomy.</strong> The visible area is 224 lines
+                (239 with overscan); the remaining lines are vertical blanking. NMI
+                fires at the start of vblank, the heartbeat of most game loops.
+              </figcaption>
+            </figure>
+
+            <figure class="figure-card">
+              <div class="figure-head">
+                <span class="figure-title">Scanline anatomy</span>
+                <span class="figure-tag">Fig. 3</span>
+              </div>
+              <svg
+                class="fig-svg"
+                viewBox="0 0 760 250"
+                role="img"
+                aria-label="Scanline anatomy: 341 dots, 256 visible, 85 horizontal blanking; each dot is four master cycles."
+              >
+                <text x="40" y="34" class="fig-title">1 scanline = 341 dots = 1364 master cycles</text>
+
+                <rect x="40" y="60" width="510" height="52" rx="4" class="fig-box-accent" />
+                <rect x="550" y="60" width="170" height="52" rx="4" class="fig-box" />
+                <text x="295" y="91" text-anchor="middle" class="fig-title">256 visible dots</text>
+                <text x="635" y="91" text-anchor="middle" class="fig-sub">85 hblank dots</text>
+
+                <path d="M40 132 H720" class="fig-line" />
+                <path d="M40 126 V138 M550 126 V138 M720 126 V138" class="fig-line" />
+                <text x="40" y="154" class="fig-sub">0</text>
+                <text x="550" y="154" text-anchor="middle" class="fig-sub">256</text>
+                <text x="720" y="154" text-anchor="end" class="fig-sub">341</text>
+
+                <path d="M40 176 V186 H720 V176" class="fig-line" />
+                <text x="380" y="210" text-anchor="middle" class="fig-sub">1364 master cycles</text>
+                <text x="40" y="238" class="fig-sub">1 dot = 4 master cycles</text>
+              </svg>
+              <figcaption class="figcaption">
+                <strong>One scanline.</strong> The visible 256 dots are followed by 85
+                dots of horizontal blanking. The PPU still counts them; software uses
+                the H/V counters to know where the beam is.
+              </figcaption>
+            </figure>
+          </div>
+
+          <p>
+            Multiply it out and the whole frame budget appears. These are the numbers
+            the scheduler, the PPU and the audio buffer share:
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Quantity</th>
+                  <th scope="col">NTSC</th>
+                  <th scope="col">PAL</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Master cycles per frame</td>
+                  <td class="num">357,368</td>
+                  <td class="num">425,568</td>
+                </tr>
+                <tr>
+                  <td>Frame duration</td>
+                  <td class="num">16.639 ms</td>
+                  <td class="num">19.997 ms</td>
+                </tr>
+                <tr>
+                  <td>Frame rate</td>
+                  <td class="num">60.0985 Hz</td>
+                  <td class="num">50.0070 Hz</td>
+                </tr>
+                <tr>
+                  <td>Dots per frame</td>
+                  <td class="num">89,342</td>
+                  <td class="num">106,392</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>
+            None of this is trivia. If the emulator thinks a frame is "about 16
+            milliseconds", it cannot place a mid-scanline write or an HDMA transfer at
+            the right moment. If it thinks in master cycles, everything else is a
+            divisor. Quantitative architecture texts treat this as the difference
+            between average and worst-case timing
+            <a class="cite" href="#bib-4">[4]</a><a class="cite" href="#bib-5">[5]</a>.
+          </p>
+
+          <h3>What one CPU cycle actually costs</h3>
+          <p>
+            The number 3.579545 MHz is not a constant instruction rate. It is the rate
+            of a CPU cycle that takes six master cycles. A 65C816 access that touches
+            fast memory takes eight; a slow I/O access takes twelve. Real code mixes
+            all three, so the effective speed depends on what the code is doing. The
+            emulator must charge the correct cost per access, not a fixed cost per
+            instruction.
           </p>
 
           <div class="table-wrap">
@@ -295,6 +690,50 @@
             </table>
           </div>
 
+          <figure class="figure">
+            <div class="figure-head">
+              <span class="figure-title">Cost of one bus access</span>
+              <span class="figure-tag">Fig. 4</span>
+            </div>
+            <div
+              class="cycle-cost"
+              role="img"
+              aria-label="Internal cycles cost 6 master cycles, fast memory 8, slow I/O 12."
+            >
+              <div class="cycle-row">
+                <span class="cycle-label">Internal cycle</span>
+                <div class="cycle-track"><div class="cycle-fill" style="--w: 50%"></div></div>
+                <span class="cycle-value">6</span>
+              </div>
+              <div class="cycle-row">
+                <span class="cycle-label">Fast memory</span>
+                <div class="cycle-track"><div class="cycle-fill" style="--w: 66.7%"></div></div>
+                <span class="cycle-value">8</span>
+              </div>
+              <div class="cycle-row">
+                <span class="cycle-label">Slow I/O</span>
+                <div class="cycle-track"><div class="cycle-fill" style="--w: 100%"></div></div>
+                <span class="cycle-value">12</span>
+              </div>
+            </div>
+            <figcaption class="figcaption">
+              <strong>A CPU cycle is not fixed work.</strong> The same instruction can
+              cost 6, 8 or 12 master cycles depending on where its operands live. This
+              is why the bus, not the CPU, must know the cost of every region.
+            </figcaption>
+          </figure>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              A CPU access is a delivery truck crossing checkpoints. An internal cycle
+              never leaves the depot (6 ticks). Fast memory has one checkpoint (8
+              ticks). A slow I/O register has two (12 ticks). The truck's engine does
+              not get slower; the paperwork does. That is why "3.58 MHz" is a nominal
+              rate, not a promise.
+            </p>
+          </div>
+
           <div class="callout">
             <span class="label">Design decision</span>
             <p>
@@ -306,19 +745,20 @@
             </p>
           </div>
 
-          <h3>Dots, scanlines and frames</h3>
+          <h3>Why this matters for the emulator</h3>
           <p>
-            A scanline is 1364 master cycles, or 341 dots. Only 256 dots are visible
-            in normal resolution; the rest is horizontal blanking. A frame has 262
-            lines on NTSC (312 on PAL), and only the first 224 (or 239 in overscan)
-            are visible. Vertical blanking is where the CPU is allowed to touch VRAM
-            and OAM freely.
+            The PPU does not render a frame and hand it over at the end. It produces
+            the picture <em>continuously</em>, one dot at a time, and the CPU can
+            change registers while the beam is in the middle of the screen. A scroll
+            value written halfway down the screen affects the rest of that frame. This
+            is why the time base is not an implementation detail: it is what makes
+            raster effects possible.
           </p>
           <p>
-            The picture is therefore produced <em>continuously</em>, not all at once
-            at the end of the frame. Registers written while the beam is in the middle
-            of the screen can change the rest of the frame. This single fact drives
-            most of the PPU design.
+            Use master cycles as the integer time base. Convert to milliseconds,
+            samples or host frames only at the boundary of the frontend. Never let
+            floating point or the host clock leak into the core: the same ROM must
+            produce the same frame on every machine.
           </p>
         </section>
 
@@ -333,7 +773,8 @@
             is an integer ratio and synchronization is trivial. The APU does not: its
             24.576 MHz oscillator does not divide the video clock, so the CPU and the
             SPC700 drift relative to each other unless the emulator actively keeps
-            them aligned.
+            them aligned. This is a discrete-event scheduling problem
+            <a class="cite" href="#bib-6">[6]</a>.
           </p>
 
           <h3>Relative schedulers</h3>
@@ -363,6 +804,17 @@ if (cpu_smp &gt;= 0) {
             The CPU&harr;PPU pair runs on the same clock, so it can use raw master
             cycles without scaling.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Two runners are jogging on separate tracks. Each keeps a shared ledger
+              in the other runner's currency: one stride on track A is worth 24.576
+              units, one stride on track B is worth 21.477 units. Whoever is behind in
+              the ledger takes the next stride. Nobody needs a global stopwatch, and
+              the ledger never drifts as long as the exchange rate is exact.
+            </p>
+          </div>
 
           <h3>Granularity</h3>
           <div class="table-wrap">
@@ -397,6 +849,16 @@ if (cpu_smp &gt;= 0) {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Rendering per scanline is painting a wall one roller stroke at a time.
+              Rendering per dot is painting one pixel at a time. The roller is much
+              faster, but you cannot change the paint color in the middle of a stroke.
+              Games that change color mid-line need the slower brush.
+            </p>
           </div>
 
           <p>
@@ -466,6 +928,40 @@ if (cpu_smp &gt;= 0) {
             </table>
           </div>
 
+          <div class="callout">
+            <span class="label">Worked example</span>
+            <p>
+              <code>$7E0000</code> is the first byte of WRAM; <code>$2100</code> is
+              INIDISP (screen brightness); <code>$2137</code> latches the H/V
+              counters; reading <code>$4210</code> acknowledges the NMI. The same
+              24-bit space contains RAM, ROM and control panels, which is why the bus
+              must decode regions before it can read or write.
+            </p>
+          </div>
+
+          <p>
+            An address is written as <dfn>bank</dfn>:offset. A bank is 64 KB, so
+            <code>$7E:0000</code> and <code>$7E:FFFF</code> are the two ends of one
+            bank. The 65C816 is <dfn>little-endian</dfn>: a 16-bit value is stored
+            low byte first. If the value <code>0x2100</code> is stored at
+            <code>$7E0000</code>, then <code>$7E0000</code> holds <code>0x00</code>
+            and <code>$7E0001</code> holds <code>0x21</code>. Getting this backwards
+            turns every 16-bit register write into a plausible-looking but wrong
+            value.
+          </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              The address space is a building with 256 floors (banks) and 65,536
+              rooms per floor. Some floors are real memory (WRAM), some are storage
+              (ROM), and some are control panels (MMIO). <dfn>Mirroring</dfn> is a
+              door that opens into the same room from another corridor. Open bus is
+              the last person to speak in a quiet room: if nobody answers, you hear
+              the previous voice.
+            </p>
+          </div>
+
           <h3>Reads and writes are not symmetric</h3>
           <p>
             Many registers behave differently when read versus written, and some
@@ -482,7 +978,8 @@ if (cpu_smp &gt;= 0) {
             a behavior called <strong>open bus</strong>. Games do read unmapped
             regions; returning zero is not always harmless. Access speed also depends
             on the region: WRAM and most ROM are fast, while PPU/APU registers are
-            slow and cost extra master cycles. The memory map is a timing map too.
+            slow and cost extra master cycles called <dfn>wait states</dfn>. The
+            memory map is a timing map too.
           </p>
 
           <div class="callout">
@@ -530,6 +1027,29 @@ if (cpu_smp &gt;= 0) {
               </tbody>
             </table>
           </div>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              The CPU is a chef following a recipe. The program counter is the finger
+              pointing at the current step. The registers are the countertop: fast,
+              small, and always within reach. The <dfn>flags</dfn> are sticky notes
+              ("the last result was zero", "a carry happened"). The <dfn>stack</dfn>
+              is a pile of plates used for return addresses and temporary values; you
+              put plates on top and take them off the top.
+            </p>
+          </div>
+
+          <p>
+            Each instruction starts with an <dfn>opcode</dfn>, a byte that tells the
+            CPU what to do. The bytes after it are operands, and the
+            <dfn>addressing mode</dfn> decides how to turn those bytes into an
+            effective address. For example, <code>LDA $7E0000</code> reads a byte
+            from WRAM (fast memory, 8 master cycles), while
+            <code>LDA $2100</code> reads a PPU register (slow I/O, 12 master
+            cycles). Same mnemonic, different cost: the addressing mode and the
+            region, not the opcode alone, determine the timing.
+          </p>
 
           <h3>M, X and E change the instruction set</h3>
           <p>
@@ -611,8 +1131,21 @@ if (cpu_smp &gt;= 0) {
             logic, not programmable processors, and the CPU cannot read back the
             pixels they generate. The only feedback the CPU gets is through status
             registers and the H/V counters. That makes the PPU the least documented
-            and most frustrating component to emulate perfectly.
+            and most frustrating component to emulate perfectly
+            <a class="cite" href="#bib-12">[12]</a>.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              The PPU is a dot-matrix printer that never stops. VRAM is the cabinet of
+              stencils, CGRAM is the paint palette, and OAM is a list of stickers to
+              place. The print head moves left to right, line by line; horizontal
+              blanking is the carriage return, and vertical blanking is the page feed.
+              If you change the stencil while the head is printing, the rest of the
+              page changes.
+            </p>
+          </div>
 
           <div class="table-wrap">
             <table>
@@ -639,6 +1172,29 @@ if (cpu_smp &gt;= 0) {
             a palette index. Tilemaps then reference tiles by index and add flip,
             palette and priority bits.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              A bitplane is a sheet of tracing paper. The first sheet says "add 1",
+              the second says "add 2", the third says "add 4", and so on. Stack the
+              sheets and each pixel gets a number: the palette index. A 2bpp tile is
+              two sheets, a 4bpp tile is four. The picture is not stored as colors; it
+              is stored as layers of yes/no decisions.
+            </p>
+          </div>
+
+          <div class="callout">
+            <span class="label">Worked example</span>
+            <p>
+              Take one row of a 2bpp tile with plane 0 = <code>11100100</code> and
+              plane 1 = <code>01111010</code>. For each pixel, index = plane 0 bit +
+              2 &times; plane 1 bit:
+              <code>1, 3, 3, 2, 2, 1, 2, 0</code>. Index 0 is transparent for
+              sprites; the other indices point into CGRAM. Two bytes produced eight
+              pixels — that is the compression that makes tile-based graphics cheap.
+            </p>
+          </div>
 
           <h3>Background modes</h3>
           <div class="table-wrap">
@@ -675,6 +1231,17 @@ if (cpu_smp &gt;= 0) {
             several priority levels.
           </p>
 
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Backgrounds are a printed page; sprites are stickers placed on top.
+              The per-scanline limit is a physical constraint of the machine that
+              places the stickers: after 32 stickers or 34 small tiles on one line, it
+              runs out of hands. Priority decides which sticker sits on top when two
+              of them overlap.
+            </p>
+          </div>
+
           <h3>Mode 7</h3>
           <p>
             Mode 7 is the famous affine mode: a 128&times;128 tilemap is transformed by
@@ -684,6 +1251,16 @@ if (cpu_smp &gt;= 0) {
             than the usual 32&times;32 layout.
           </p>
 
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Mode 7 is a printed grid on a rubber sheet. The matrix stretches,
+              rotates and skews the sheet; the center point is the pin you rotate
+              around, and the scroll values slide the sheet under the window. The
+              pixels do not move individually — the coordinate system does.
+            </p>
+          </div>
+
           <h3>Effects</h3>
           <p>
             On top of the layers sit mosaic, two windows with per-layer enable/invert
@@ -691,6 +1268,17 @@ if (cpu_smp &gt;= 0) {
             and interlace. These are not post-processing filters: they are part of the
             per-pixel priority and blending pipeline.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              Windows are masking tape on the screen: they decide where a layer is
+              allowed to paint. Color math is mixing two buckets of paint, or adding
+              light to a darkened room. Mosaic lowers the resolution by averaging
+              blocks of pixels. None of these are applied after the frame; they happen
+              while each pixel is being chosen.
+            </p>
+          </div>
 
           <h3>Timing is the renderer</h3>
           <p>
@@ -759,6 +1347,17 @@ if (cpu_smp &gt;= 0) {
             </div>
           </div>
 
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              DMA is a forklift moving a pallet: fast, but it blocks the aisle while
+              it works, so the CPU has to wait. HDMA is a player-piano roll: instead
+              of one big move, a paper strip tells the machine which small adjustment
+              to make on each line. The CPU writes the roll once and then goes back to
+              composing; the piano plays itself one row at a time.
+            </p>
+          </div>
+
           <p>
             For the emulator, DMA is a timing feature before it is a data feature.
             It must interact correctly with interrupts, the CPU's halt state, the
@@ -781,6 +1380,17 @@ if (cpu_smp &gt;= 0) {
             through four registers at <code>$2140&ndash;$2143</code>, and nothing
             else.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              The APU is a band rehearsing in a soundproof room. The SPC700 is the
+              conductor reading the score; the DSP is the instruments; ARAM is the
+              sheet music. The main CPU cannot hear through the wall — it can only
+              pass notes through a four-slot mail slot. That mail slot is why the
+              boot protocol exists and why audio has its own clock.
+            </p>
+          </div>
 
           <h3>The boot protocol</h3>
           <p>
@@ -833,6 +1443,32 @@ if (cpu_smp &gt;= 0) {
           </p>
 
           <div class="callout">
+            <span class="label">Worked example</span>
+            <p>
+              At 32 kHz, a 1 kHz tone gets 32 samples per cycle — plenty to describe
+              the wave. The Nyquist–Shannon sampling theorem says a sample rate can
+              represent frequencies up to half that rate, so 32 kHz audio can carry
+              content up to 16 kHz. Anything above that must be filtered before
+              sampling, or it folds back as aliasing
+              <a class="cite" href="#bib-7">[7]</a>. This is why the DSP's output
+              filter is not optional decoration.
+            </p>
+          </div>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              <dfn>ADSR</dfn> is a singer's breath: attack is how quickly the note
+              starts, decay is the initial fall, sustain is the steady volume, and
+              release is the fade after the key is let go. <dfn>Echo</dfn> is a
+              canyon reflection of the mix; the <dfn>FIR</dfn> filter is the shape of
+              the canyon walls <a class="cite" href="#bib-8">[8]</a>. The <dfn>ring buffer</dfn> is a circular conveyor
+              belt between the emulator and the sound card; an <dfn>underrun</dfn> is
+              the belt arriving empty, which you hear as a click.
+            </p>
+          </div>
+
+          <div class="callout">
             <span class="label">Synchronization reminder</span>
             <p>
               The DSP advances with the SPC700, which advances against the main CPU
@@ -855,8 +1491,23 @@ if (cpu_smp &gt;= 0) {
             title, mapping mode, ROM size, SRAM size, region and vectors. The two main
             mapping families are <strong>LoROM</strong> (32 KB banks mapped into the
             upper half of each bank) and <strong>HiROM</strong> (full 64 KB banks).
-            ExHiROM extends the address space further.
+            ExHiROM extends the address space further <a class="cite" href="#bib-12">[12]</a>.
+            <dfn>SRAM</dfn> is the battery-backed save memory inside the cartridge;
+            in the emulator it is usually a small file next to the ROM.
           </p>
+
+          <div class="callout">
+            <span class="label">Worked example</span>
+            <p>
+              In LoROM, <code>$00:8000</code> maps to ROM offset
+              <code>$000000</code>, <code>$00:FFFF</code> to <code>$007FFF</code>,
+              and <code>$01:8000</code> to <code>$008000</code>. The lower half of
+              each bank is unused or mirrors system space. In HiROM,
+              <code>$C0:0000</code> maps to ROM offset <code>$000000</code> and the
+              full 64 KB is contiguous. If your loader picks the wrong mapping, the
+              reset vector points into garbage.
+            </p>
+          </div>
 
           <p>
             The cartridge is also where coprocessors live. Some games put a whole
@@ -864,6 +1515,17 @@ if (cpu_smp &gt;= 0) {
             implement that chip or gracefully refuse to run the game. This is where
             scope explodes.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              A plain cartridge is a book. A cartridge with a coprocessor is a book
+              with a calculator taped to the inside cover: the story is still there,
+              but some pages ask the calculator for help. If your emulator only knows
+              how to read books, those pages will look blank until you also emulate
+              the calculator.
+            </p>
+          </div>
 
           <div class="table-wrap">
             <table>
@@ -908,6 +1570,17 @@ if (cpu_smp &gt;= 0) {
             and differential testing against a reference emulator for everything else.
           </p>
 
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              An <dfn>oracle</dfn> is the answer key. Hardware is the only true key,
+              but you cannot ask it to grade millions of runs. Test ROMs are the
+              questions the hardware itself answered in advance; a reference emulator
+              is a second student you compare notes with. When the two disagree, the
+              bug is somewhere between them.
+            </p>
+          </div>
+
           <div class="grid grid-2">
             <div class="card">
               <span class="tag">Level 1</span>
@@ -941,6 +1614,17 @@ if (cpu_smp &gt;= 0) {
                 compare traces, frames and audio. Divergence points to the bug.
               </p>
             </div>
+          </div>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              A frame hash is a fingerprint: if it changes, something touched the
+              picture, even if you cannot see it yet. A <dfn>trace</dfn> is a GPS log
+              of the CPU: every turn, every stop, every timestamp. <dfn>Differential
+              testing</dfn> is running the same route with two GPS units and comparing
+              where they first disagree.
+            </p>
           </div>
 
           <h3>Build the debugger you will need</h3>
@@ -987,16 +1671,28 @@ if (cpu_smp &gt;= 0) {
           <ul>
             <li>Require the user to supply a dump, like a BIOS file.</li>
             <li>
-              Ship a clean-room IPL that implements the same protocol, such as
+              Ship a <dfn>clean-room</dfn> IPL that implements the same protocol,
+              written from a specification rather than copied, such as
               <a href="https://github.com/stackblender/snes-spc700-boot-rom" target="_blank" rel="noopener noreferrer">snes-spc700-boot-rom</a>.
             </li>
             <li>Emulate the boot protocol at a high level instead of executing the ROM.</li>
           </ul>
           <p>
-            Coprocessor firmware (DSP-1, SuperFX, SA-1) raises the same questions.
-            This is not legal advice; if the project is distributed commercially,
-            review the licenses and firmware policy with a lawyer.
+            Coprocessor <dfn>firmware</dfn> (DSP-1, SuperFX, SA-1) raises the same
+            questions. This is not legal advice; if the project is distributed
+            commercially, review the licenses and firmware policy with a lawyer.
           </p>
+
+          <div class="analogy">
+            <span class="label">Analogy</span>
+            <p>
+              A clean-room implementation is a dance written down by someone who
+              watched the performance and described the steps, not someone who copied
+              the original choreography sheet. The goal is compatible behavior, not
+              identical text. That is a legal and engineering distinction worth
+              keeping explicit.
+            </p>
+          </div>
         </section>
 
         <section id="glossary" class="section">
@@ -1006,24 +1702,72 @@ if (cpu_smp &gt;= 0) {
           </div>
 
           <dl class="glossary">
+            <div><dt>Clock</dt><dd>A signal that alternates at a fixed rate and gives every component a shared notion of "next tick".</dd></div>
+            <div><dt>Frequency</dt><dd>Cycles per second, measured in hertz (Hz).</dd></div>
+            <div><dt>Period</dt><dd>The time of one cycle. Frequency and period are reciprocals.</dd></div>
+            <div><dt>Cycle</dt><dd>One complete clock period. A master cycle is the finest common unit on the SNES.</dd></div>
+            <div><dt>Bit</dt><dd>One binary digit: 0 or 1.</dd></div>
+            <div><dt>Byte</dt><dd>Eight bits, holding 0–255 (0x00–0xFF).</dd></div>
+            <div><dt>Word</dt><dd>The natural data width of a processor; 16 bits on the 65C816.</dd></div>
+            <div><dt>Hexadecimal</dt><dd>Base-16 notation. One hex digit is four bits; the <code>$</code> prefix means hex.</dd></div>
+            <div><dt>Register</dt><dd>A small storage cell inside a chip, used for data, addresses, flags or hardware control.</dd></div>
+            <div><dt>Bank</dt><dd>A 64 KB window of the 24-bit address space. The SNES has 256 banks.</dd></div>
+            <div><dt>Mirroring</dt><dd>Mapping the same physical memory or register at more than one address.</dd></div>
+            <div><dt>Little-endian</dt><dd>Byte order where the low byte of a multi-byte value is stored first. The 65C816 is little-endian.</dd></div>
+            <div><dt>Wait state</dt><dd>Extra master cycles added when an access targets slow memory or I/O.</dd></div>
+            <div><dt>Address bus</dt><dd>The shared wires that select a memory location or device.</dd></div>
+            <div><dt>Data bus</dt><dd>The shared wires that carry the value being read or written.</dd></div>
+            <div><dt>Interrupt</dt><dd>A signal that makes the CPU jump to a handler. See IRQ and NMI.</dd></div>
+            <div><dt>Vector</dt><dd>The address of an interrupt handler, stored in a fixed table.</dd></div>
+            <div><dt>Opcode</dt><dd>The byte that selects a CPU instruction; operands follow it.</dd></div>
+            <div><dt>Addressing mode</dt><dd>The rule that turns opcode operands into an effective memory address.</dd></div>
+            <div><dt>Flag</dt><dd>A one-bit status marker such as zero, carry, negative, or interrupt-disable.</dd></div>
+            <div><dt>Stack</dt><dd>Last-in, first-out storage for return addresses and temporary values.</dd></div>
             <div><dt>Bus</dt><dd>The shared path through which the CPU reads and writes memory and devices.</dd></div>
             <div><dt>Open bus</dt><dd>The last value driven on the data bus, returned by unmapped reads.</dd></div>
             <div><dt>Master cycle</dt><dd>The finest common time unit, derived from the 21.477 MHz oscillator.</dd></div>
             <div><dt>Dot</dt><dd>One PPU pixel period: four master cycles.</dd></div>
             <div><dt>Scanline</dt><dd>One horizontal line of video: 341 dots, or 1364 master cycles.</dd></div>
             <div><dt>VBlank</dt><dd>The vertical blanking period where the CPU can safely access VRAM and OAM.</dd></div>
-            <div><dt>NMI / IRQ</dt><dd>Non-maskable and maskable interrupts used for vblank and raster timing.</dd></div>
+            <div><dt>NMI</dt><dd>Non-maskable interrupt: cannot be ignored; the SNES uses it for vertical blanking.</dd></div>
+            <div><dt>IRQ</dt><dd>Maskable interrupt: can be disabled; the SNES uses it for timer and raster events.</dd></div>
             <div><dt>DMA</dt><dd>Direct memory access: a block transfer that steals CPU cycles.</dd></div>
             <div><dt>HDMA</dt><dd>Per-scanline DMA driven by a table, used for raster effects.</dd></div>
-            <div><dt>MMIO</dt><dd>Memory-mapped I/O: hardware registers exposed as addresses.</dd></div>
+            <div><dt>Memory-mapped I/O</dt><dd>MMIO: hardware registers exposed as addresses, so a read or write has side effects.</dd></div>
             <div><dt>LLE / HLE</dt><dd>Low-level emulation (model the hardware) vs high-level emulation (model the interface).</dd></div>
-            <div><dt>Dynarec</dt><dd>Translating guest instructions to host instructions at runtime for speed.</dd></div>
+            <div><dt>Dynamic binary translation</dt><dd>Dynarec: translating guest instructions into host instructions at runtime for speed.</dd></div>
+            <div><dt>Emulator</dt><dd>A machine that reproduces the observable behavior of another machine.</dd></div>
+            <div><dt>Simulator</dt><dd>A model built to study a system; emulators usually aim to run the original software.</dd></div>
+            <div><dt>Firmware</dt><dd>Code embedded in a device. The SPC700 IPL is firmware; game ROMs are software.</dd></div>
+            <div><dt>SRAM</dt><dd>Battery-backed cartridge memory used for save files.</dd></div>
+            <div><dt>Deterministic</dt><dd>Same state and inputs always produce the same outputs, independent of the host clock.</dd></div>
             <div><dt>Scheduler</dt><dd>The component that decides which emulated processor runs next.</dd></div>
             <div><dt>Save state</dt><dd>A serialized snapshot of the entire emulated machine, including timing state.</dd></div>
             <div><dt>BRR</dt><dd>Bit Rate Reduction: the SNES compressed sample format.</dd></div>
             <div><dt>ADSR</dt><dd>Attack, Decay, Sustain, Release: the volume envelope of a DSP voice.</dd></div>
             <div><dt>IPL</dt><dd>Initial Program Loader: the 64-byte SPC700 boot ROM and its upload protocol.</dd></div>
             <div><dt>LoROM / HiROM</dt><dd>The two main cartridge-to-address-space mapping schemes.</dd></div>
+            <div><dt>Tile</dt><dd>An 8×8 pixel block stored as bitplanes; the SNES composes the screen from tiles.</dd></div>
+            <div><dt>Bitplane</dt><dd>One bit per pixel of a tile. Stacking planes produces the palette index.</dd></div>
+            <div><dt>Tilemap</dt><dd>A grid of tile indices plus flip, palette and priority bits.</dd></div>
+            <div><dt>Palette / CGRAM</dt><dd>A table of colors. CGRAM holds 256 BGR555 colors for backgrounds and sprites.</dd></div>
+            <div><dt>OAM</dt><dd>Object Attribute Memory: 544 bytes describing 128 sprites (position, tile, flags, size).</dd></div>
+            <div><dt>Sprite</dt><dd>A movable object layer placed over the backgrounds; limited per scanline.</dd></div>
+            <div><dt>Priority</dt><dd>The rule that decides which layer or sprite wins when pixels overlap.</dd></div>
+            <div><dt>Blank</dt><dd>Time when the beam is not drawing: horizontal blanking between lines, vertical blanking between frames.</dd></div>
+            <div><dt>APU / ARAM</dt><dd>The audio subsystem and its 64 KB of dedicated Audio RAM.</dd></div>
+            <div><dt>SPC700</dt><dd>The 8-bit CPU inside the APU; runs the audio driver at 1.024 MHz.</dd></div>
+            <div><dt>DSP</dt><dd>The audio synthesizer: eight voices, BRR samples, envelopes and mixing.</dd></div>
+            <div><dt>Echo</dt><dd>A delayed copy of the mix added back to the output; the SNES keeps it in ARAM.</dd></div>
+            <div><dt>FIR</dt><dd>Finite impulse response filter: a weighted sum of recent samples. It shapes the echo.</dd></div>
+            <div><dt>Ring buffer</dt><dd>A fixed-size circular queue between the emulator and the sound card.</dd></div>
+            <div><dt>Underrun</dt><dd>The audio buffer runs empty, producing a click or dropout.</dd></div>
+            <div><dt>Determinism</dt><dd>Same state and inputs produce the same outputs every run, independent of the host clock.</dd></div>
+            <div><dt>Oracle</dt><dd>A trusted source of expected behavior; real hardware is the only perfect oracle.</dd></div>
+            <div><dt>Trace</dt><dd>A log of executed instructions, registers and cycles used for comparison.</dd></div>
+            <div><dt>Frame hash</dt><dd>A fingerprint of a rendered frame, used to detect visual regressions.</dd></div>
+            <div><dt>Differential testing</dt><dd>Running the same input in two implementations and comparing where they diverge.</dd></div>
+            <div><dt>Clean-room</dt><dd>An implementation written from a specification without copying the original code.</dd></div>
           </dl>
         </section>
 
@@ -1073,6 +1817,92 @@ if (cpu_smp &gt;= 0) {
               aria-label="Filter references"
             />
             <span class="ref-count" id="ref-count" aria-live="polite"></span>
+          </div>
+
+          <div class="ref-group" id="foundations">
+            <h3>Foundations — books and papers</h3>
+            <ol class="bibliography">
+              <li id="bib-1">
+                <strong>Smith, J. E., &amp; Nair, R. (2005).</strong>
+                <em>Virtual Machines: Versatile Platforms for Systems and Processes.</em>
+                Morgan Kaufmann.
+                <a href="https://books.google.com/books?isbn=9781558609105" target="_blank" rel="noopener noreferrer">ISBN 978-1-55860-910-5</a>.
+                The standard reference for emulation, interpretation and virtualization layers.
+              </li>
+              <li id="bib-2">
+                <strong>Patterson, D. A., &amp; Hennessy, J. L. (2020).</strong>
+                <em>Computer Organization and Design: The Hardware/Software Interface</em>
+                (RISC-V ed.). Morgan Kaufmann.
+                <a href="https://books.google.com/books?isbn=9780128203316" target="_blank" rel="noopener noreferrer">ISBN 978-0-12-820331-6</a>.
+                Clocks, buses, memory-mapped I/O, interrupts and performance.
+              </li>
+              <li id="bib-3">
+                <strong>Harris, D., &amp; Harris, S. (2012).</strong>
+                <em>Digital Design and Computer Architecture</em> (2nd ed.). Morgan Kaufmann.
+                <a href="https://books.google.com/books?isbn=9780123944245" target="_blank" rel="noopener noreferrer">ISBN 978-0-12-394424-5</a>.
+                Digital logic, state machines and the clocked hardware model used throughout this guide.
+              </li>
+              <li id="bib-4">
+                <strong>Hennessy, J. L., &amp; Patterson, D. A. (2017).</strong>
+                <em>Computer Architecture: A Quantitative Approach</em> (6th ed.). Morgan Kaufmann.
+                <a href="https://books.google.com/books?isbn=9780128119051" target="_blank" rel="noopener noreferrer">ISBN 978-0-12-811905-1</a>.
+                Performance, memory hierarchy and I/O from a quantitative perspective.
+              </li>
+              <li id="bib-5">
+                <strong>Liu, J. W. S. (2000).</strong>
+                <em>Real-Time Systems.</em> Prentice Hall.
+                <a href="https://books.google.com/books?isbn=9780131019997" target="_blank" rel="noopener noreferrer">ISBN 978-0-13-101999-7</a>.
+                Deadlines, jitter and the difference between average and worst-case timing.
+              </li>
+              <li id="bib-6">
+                <strong>Banks, J., Carson, J. S., Nelson, B. L., &amp; Nicol, D. M. (2010).</strong>
+                <em>Discrete-Event System Simulation</em> (5th ed.). Pearson.
+                <a href="https://books.google.com/books?isbn=9780136062127" target="_blank" rel="noopener noreferrer">ISBN 978-0-13-606212-7</a>.
+                Event-driven simulation and the scheduling model behind a relative scheduler.
+              </li>
+              <li id="bib-7">
+                <strong>Puckette, M. (2007).</strong>
+                <em>The Theory and Technique of Electronic Music.</em> World Scientific.
+                <a href="https://msp.ucsd.edu/techniques.htm" target="_blank" rel="noopener noreferrer">Free online edition</a>.
+                Sampling, envelopes, filters and the mathematics of digital audio.
+              </li>
+              <li id="bib-8">
+                <strong>Zölzer, U. (Ed.) (2011).</strong>
+                <em>DAFX: Digital Audio Effects</em> (2nd ed.). Wiley.
+                <a href="https://books.google.com/books?isbn=9780470665992" target="_blank" rel="noopener noreferrer">ISBN 978-0-470-66599-2</a>.
+                Delay, echo, filters and the DSP building blocks used by the S-DSP.
+              </li>
+              <li id="bib-9">
+                <strong>Montfort, N., &amp; Bogost, I. (2009).</strong>
+                <em>Racing the Beam: The Atari Video Computer System.</em> MIT Press.
+                <a href="https://books.google.com/books?isbn=9780262514613" target="_blank" rel="noopener noreferrer">ISBN 978-0-262-51461-3</a>.
+                A concrete account of software racing a CRT beam, the same constraint the SNES PPU formalizes.
+              </li>
+              <li id="bib-10">
+                <strong>Bellard, F. (2005).</strong>
+                "QEMU, a Fast and Portable Dynamic Translator." USENIX Annual Technical Conference.
+                <a href="https://www.usenix.org/legacy/event/usenix05/tech/freenix/full_papers/bellard/bellard.pdf" target="_blank" rel="noopener noreferrer">Paper (PDF)</a>.
+                The classic description of dynamic binary translation.
+              </li>
+              <li id="bib-11">
+                <strong>Goldberg, R. P. (1974).</strong>
+                "Survey of Virtual Machine Research." <em>Computer</em>, 7(6), 34–45.
+                <a href="https://doi.org/10.1109/MC.1974.6323581" target="_blank" rel="noopener noreferrer">DOI 10.1109/MC.1974.6323581</a>.
+                The foundational survey of virtual machines and emulation.
+              </li>
+              <li id="bib-12">
+                <strong>Copetti, R. (2019).</strong>
+                "Super Nintendo Entertainment System Architecture."
+                <a href="https://www.copetti.org/writings/consoles/super-nintendo/" target="_blank" rel="noopener noreferrer">copetti.org</a>.
+                A carefully researched, readable overview of the SNES hardware; useful as a second opinion.
+              </li>
+              <li id="bib-13">
+                <strong>Patil, H., Pereira, C., Stallcup, M., Lueck, G., &amp; Cownie, J. (2010).</strong>
+                "PinPlay: A Framework for Deterministic Replay and Reproducible Analysis of Parallel Programs." <em>CGO '10</em>.
+                <a href="https://doi.org/10.1145/1772954.1772958" target="_blank" rel="noopener noreferrer">DOI 10.1145/1772954.1772958</a>.
+                Why deterministic replay is valuable and what it costs.
+              </li>
+            </ol>
           </div>
 
           <div class="ref-group">

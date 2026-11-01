@@ -7,6 +7,7 @@
   --border: #dde1ee;
   --accent: #5b3df5;
   --accent-2: #d92d6b;
+  --analogy: #0f8f7a;
   --accent-soft: rgba(91, 61, 245, 0.09);
   --code-bg: #f0f2fa;
   --shadow: 0 12px 32px rgba(24, 28, 58, 0.08);
@@ -28,6 +29,7 @@
   --border: #252b40;
   --accent: #a193ff;
   --accent-2: #ff6b9a;
+  --analogy: #5eead4;
   --accent-soft: rgba(161, 147, 255, 0.12);
   --code-bg: #0e111c;
   --shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
@@ -216,54 +218,6 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.lang-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.lang-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 9px;
-  border-radius: 8px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.05em;
-  text-decoration: none;
-  transition: background 0.13s ease, color 0.13s ease;
-}
-
-.lang-link:hover {
-  color: var(--text);
-}
-
-.lang-link[aria-current="page"] {
-  background: var(--accent-soft);
-  color: var(--text);
-}
-
-.flag-pair {
-  display: inline-flex;
-  gap: 2px;
-}
-
-.flag {
-  display: block;
-  width: 18px;
-  height: 12px;
-  border-radius: 2px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14);
-  flex: 0 0 auto;
 }
 
 .icon-btn {
@@ -578,6 +532,85 @@ pre code {
   color: var(--accent-2);
 }
 
+dfn {
+  font-style: normal;
+  font-weight: 600;
+  text-decoration: underline dotted var(--accent);
+  text-underline-offset: 3px;
+}
+
+.analogy {
+  margin: 22px 0;
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--analogy);
+  border-radius: 0 12px 12px 0;
+  background: var(--surface);
+}
+
+.analogy p {
+  margin: 0;
+  font-size: 0.93rem;
+}
+
+.analogy .label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--analogy);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.terms-note {
+  margin: 22px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.cite {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.68em;
+  line-height: 0;
+  text-decoration: none;
+  vertical-align: super;
+}
+
+.cite:hover {
+  color: var(--accent-2);
+}
+
+.bibliography {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+
+.bibliography li {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.bibliography li::marker {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.bibliography strong {
+  color: var(--text);
+}
+
+.bibliography a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
 /* ---------- Tables ---------- */
 
 .table-wrap {
@@ -769,6 +802,192 @@ th.num {
   margin: 12px 0 0;
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+/* ---------- Figures ---------- */
+
+.figure {
+  margin: 24px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.figure-grid {
+  display: grid;
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 24px 0;
+}
+
+.figure-card {
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.figure-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.figure-title {
+  font-size: 0.86rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.figure-tag {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.fig-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.fig-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.fig-scroll-note {
+  display: none;
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+
+.figcaption {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.figcaption strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fig-box {
+  fill: var(--surface-2);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.fig-box-accent {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.fig-box-warm {
+  fill: var(--surface-2);
+  stroke: var(--accent-2);
+  stroke-width: 1;
+}
+
+.fig-title {
+  fill: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.fig-sub {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.fig-label {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fig-line {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.fig-accent-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.fig-warm-line {
+  fill: none;
+  stroke: var(--accent-2);
+  stroke-width: 1.5;
+}
+
+.fig-dot-accent {
+  fill: var(--accent);
+}
+
+.fig-dot-warm {
+  fill: var(--accent-2);
+}
+
+.cycle-cost {
+  display: grid;
+  gap: 10px;
+  margin: 6px 0 2px;
+}
+
+.cycle-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 12px;
+}
+
+.cycle-label {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.cycle-track {
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.cycle-fill {
+  display: block;
+  width: var(--w);
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.cycle-value {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-align: right;
 }
 
 /* ---------- Glossary ---------- */
@@ -1029,9 +1248,26 @@ th.num {
 
   .grid-2,
   .grid-3,
+  .figure-grid,
   .glossary,
   .refs {
     grid-template-columns: 1fr;
+  }
+
+  .cycle-row {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  .cycle-label {
+    grid-column: 1 / -1;
+  }
+
+  .fig-scroll .fig-svg {
+    min-width: 700px;
+  }
+
+  .fig-scroll-note {
+    display: block;
   }
 
   .system-map {
