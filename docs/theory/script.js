@@ -2,6 +2,52 @@
   "use strict";
 
   const root = document.documentElement;
+  const LANG = root.lang.toLowerCase().startsWith("pt") ? "pt" : "en";
+
+  const STRINGS = {
+    en: {
+      themeToLight: "Switch to light theme",
+      themeToDark: "Switch to dark theme",
+      readingTime: (minutes) => `~${minutes} min read`,
+      masterClock: "Master clock",
+      scpu: "S-CPU",
+      ppuDot: "PPU dot clock",
+      scanline: "Scanline",
+      masterCycles: "master cycles",
+      dots: "dots",
+      frame: "Frame",
+      lines: "lines",
+      cycles: "cycles",
+      crystalReference: "Crystal reference",
+      masterDiv: "master ÷",
+      apuDomain: "independent 24.576 MHz domain",
+      dspDesc: "8 voices, stereo",
+      timingNote: (label, lines, lineCycles) =>
+        `${label}: ${lines} scanlines per frame, ${lineCycles} master cycles per line. The APU clocks are independent of the video master clock.`,
+    },
+    pt: {
+      themeToLight: "Mudar para o tema claro",
+      themeToDark: "Mudar para o tema escuro",
+      readingTime: (minutes) => `~${minutes} min de leitura`,
+      masterClock: "Relógio mestre",
+      scpu: "S-CPU",
+      ppuDot: "Relógio de dot da PPU",
+      scanline: "Linha de varredura",
+      masterCycles: "ciclos mestre",
+      dots: "dots",
+      frame: "Quadro",
+      lines: "linhas",
+      cycles: "ciclos",
+      crystalReference: "Referência do cristal",
+      masterDiv: "mestre ÷",
+      apuDomain: "domínio independente de 24,576 MHz",
+      dspDesc: "8 vozes, estéreo",
+      timingNote: (label, lines, lineCycles) =>
+        `${label}: ${lines} linhas por quadro, ${lineCycles} ciclos mestre por linha. Os clocks da APU são independentes do clock mestre de vídeo.`,
+    },
+  };
+
+  const t = STRINGS[LANG];
 
   /* ---------- Theme ---------- */
 
@@ -11,7 +57,7 @@
     root.dataset.theme = theme;
     themeToggle?.setAttribute(
       "aria-label",
-      theme === "dark" ? "Switch to light theme" : "Switch to dark theme"
+      theme === "dark" ? t.themeToLight : t.themeToDark
     );
     if (persist) {
       try {
@@ -24,6 +70,15 @@
 
   themeToggle?.addEventListener("click", () => {
     setTheme(root.dataset.theme === "dark" ? "light" : "dark");
+  });
+
+  /* ---------- Language switch keeps the current section ---------- */
+
+  document.querySelectorAll(".lang-link").forEach((link) => {
+    link.addEventListener("click", () => {
+      const base = link.getAttribute("href").split("#")[0];
+      link.setAttribute("href", base + window.location.hash);
+    });
   });
 
   /* ---------- Table of contents ---------- */
@@ -50,7 +105,9 @@
   const main = document.getElementById("main");
   if (readingTime && main) {
     const words = (main.innerText || "").trim().split(/\s+/).filter(Boolean).length;
-    readingTime.textContent = `~${Math.max(1, Math.round(words / 220))} min read`;
+    readingTime.textContent = t.readingTime(
+      Math.max(1, Math.round(words / 220))
+    );
   }
 
   /* ---------- Scroll UI: progress, active section, back to top ---------- */
@@ -130,9 +187,13 @@
   const timingBody = document.getElementById("timing-body");
   const timingNote = document.getElementById("timing-note");
   const timingButtons = document.querySelectorAll("[data-std]");
+  const numberFormat = new Intl.NumberFormat(
+    LANG === "pt" ? "pt-BR" : "en-US",
+    { minimumFractionDigits: 4, maximumFractionDigits: 4 }
+  );
 
   function mhz(value) {
-    return `${(value / 1e6).toFixed(4)} MHz`;
+    return `${numberFormat.format(value / 1e6)} MHz`;
   }
 
   function renderTiming(key) {
@@ -141,21 +202,21 @@
 
     const fps = timing.master / (timing.lineCycles * timing.lines);
     const rows = [
-      ["Master clock", mhz(timing.master), "Crystal reference"],
-      ["S-CPU", mhz(timing.cpu), `master ÷ ${Math.round(timing.master / timing.cpu)}`],
-      ["PPU dot clock", mhz(timing.dot), `master ÷ ${Math.round(timing.master / timing.dot)}`],
+      [t.masterClock, mhz(timing.master), t.crystalReference],
+      [t.scpu, mhz(timing.cpu), `${t.masterDiv} ${Math.round(timing.master / timing.cpu)}`],
+      [t.ppuDot, mhz(timing.dot), `${t.masterDiv} ${Math.round(timing.master / timing.dot)}`],
       [
-        "Scanline",
-        `${timing.lineCycles} master cycles`,
-        `${timing.lineCycles / 4} dots`,
+        t.scanline,
+        `${timing.lineCycles} ${t.masterCycles}`,
+        `${timing.lineCycles / 4} ${t.dots}`,
       ],
       [
-        "Frame",
-        `${fps.toFixed(4)} Hz`,
-        `${timing.lines} lines × ${timing.lineCycles} cycles`,
+        t.frame,
+        `${numberFormat.format(fps)} Hz`,
+        `${timing.lines} ${t.lines} × ${timing.lineCycles} ${t.cycles}`,
       ],
-      ["SPC700 (APU)", "1.0240 MHz", "independent 24.576 MHz domain"],
-      ["S-DSP", "32.000 kHz", "8 voices, stereo"],
+      ["SPC700 (APU)", "1.0240 MHz", t.apuDomain],
+      ["S-DSP", "32.000 kHz", t.dspDesc],
     ];
 
     timingBody.innerHTML = rows
@@ -166,7 +227,11 @@
       .join("");
 
     if (timingNote) {
-      timingNote.textContent = `${timing.label}: ${timing.lines} scanlines per frame, ${timing.lineCycles} master cycles per line. The APU clocks are independent of the video master clock.`;
+      timingNote.textContent = t.timingNote(
+        timing.label,
+        timing.lines,
+        timing.lineCycles
+      );
     }
   }
 
@@ -195,17 +260,25 @@
     const query = refFilter.value.trim().toLowerCase();
     let visible = 0;
 
-    for (const ref of refs) {
-      const matches =
-        query.length === 0 || ref.textContent.toLowerCase().includes(query);
-      ref.hidden = !matches;
-      if (matches) visible += 1;
-    }
-
     for (const group of refGroups) {
-      group.hidden = !Array.from(group.querySelectorAll(".ref")).some(
-        (ref) => !ref.hidden
-      );
+      const groupTitle = (
+        group.querySelector("h3")?.textContent || ""
+      ).toLowerCase();
+      let groupVisible = false;
+
+      for (const ref of group.querySelectorAll(".ref")) {
+        const matches =
+          query.length === 0 ||
+          groupTitle.includes(query) ||
+          ref.textContent.toLowerCase().includes(query);
+        ref.hidden = !matches;
+        if (matches) {
+          visible += 1;
+          groupVisible = true;
+        }
+      }
+
+      group.hidden = !groupVisible;
     }
 
     if (refCount) refCount.textContent = `${visible} / ${refs.length}`;

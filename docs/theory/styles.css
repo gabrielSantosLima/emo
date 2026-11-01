@@ -212,6 +212,60 @@ h1 {
   flex: 0 0 auto;
 }
 
+.hero-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.lang-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.lang-link:hover {
+  color: var(--text);
+}
+
+.lang-link[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.flag-pair {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.flag {
+  display: block;
+  width: 18px;
+  height: 12px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14);
+  flex: 0 0 auto;
+}
+
 .icon-btn {
   display: inline-grid;
   place-items: center;
