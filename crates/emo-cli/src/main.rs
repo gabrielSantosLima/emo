@@ -269,6 +269,8 @@ fn run(
         println!("aram 0550: {:02x?}", &aram[0x0550..0x0570]);
         println!("aram 1338: {:02x?}", &aram[0x1338..0x1348]);
         println!("aram 1360: {:02x?}", &aram[0x1360..0x1440]);
+        println!("aram 0540: {:02x?}", &aram[0x0540..0x05C0]);
+        println!("aram 0800: {:02x?}", &aram[0x0800..0x0840]);
         println!("ipl accept tail: {:04x?}", apu.boot_accept_tail());
         println!("ipl blocks: {:04x?}", apu.boot_blocks());
         println!("ipl block tails: {:04x?}", apu.boot_block_tails());
