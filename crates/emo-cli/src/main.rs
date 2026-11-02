@@ -237,7 +237,16 @@ fn run(
         println!("aram 09e0: {:02x?}", &aram[0x09E0..0x0A00]);
         println!("aram 0500: {:02x?}", &aram[0x0500..0x0520]);
         println!("aram 0550: {:02x?}", &aram[0x0550..0x0570]);
-        println!("aram 1300: {:02x?}", &aram[0x1300..0x1380]);
+        println!("aram 1300: {:02x?}", &aram[0x1300..0x1340]);
+        println!("ipl accept tail: {:04x?}", apu.boot_accept_tail());
+        println!("ipl blocks: {:04x?}", apu.boot_blocks());
+        println!("ipl rejects: {:?}", apu.boot_rejects());
+        let decisions = apu.boot_decisions();
+        println!(
+            "ipl decisions (last 32 of {}): {:?}",
+            decisions.len(),
+            &decisions[decisions.len().saturating_sub(32)..]
+        );
         println!("aram ffde: {:02x?}", &aram[0xFFC0..0xFFE0]);
 
         for record in machine.cpu_trace() {

@@ -64,6 +64,14 @@ pub struct Apu {
     #[serde(skip)]
     boot_writes: Vec<(u8, u8)>,
     #[serde(skip)]
+    boot_accept_tail: Vec<(u16, u8)>,
+    #[serde(skip)]
+    boot_blocks: Vec<(u16, u16)>,
+    #[serde(skip)]
+    boot_decisions: Vec<(u8, u8, bool)>, // (counter, expected, accepted)
+    #[serde(skip)]
+    boot_rejects: Vec<(u8, u8, Option<u8>)>,
+    #[serde(skip)]
     trace: std::collections::VecDeque<SpcTrace>,
     #[serde(skip)]
     trace_limit: usize,
@@ -121,6 +129,10 @@ impl Apu {
             spc_port_reads: Vec::new(),
             boot_log: Vec::new(),
             boot_writes: Vec::new(),
+            boot_accept_tail: Vec::new(),
+            boot_blocks: Vec::new(),
+            boot_decisions: Vec::new(),
+            boot_rejects: Vec::new(),
             trace: std::collections::VecDeque::new(),
             trace_limit: 0,
         }
@@ -244,6 +256,30 @@ impl Apu {
         &self.spc_port_reads
     }
 
+    /// Rejected IPL writes: (counter, expected, pending data).
+    #[must_use]
+    pub fn boot_rejects(&self) -> &[(u8, u8, Option<u8>)] {
+        &self.boot_rejects
+    }
+
+    /// Last IPL counter decisions: (counter, expected, accepted).
+    #[must_use]
+    pub fn boot_decisions(&self) -> &[(u8, u8, bool)] {
+        &self.boot_decisions
+    }
+
+    /// Recorded block ranges (start, end exclusive).
+    #[must_use]
+    pub fn boot_blocks(&self) -> &[(u16, u16)] {
+        &self.boot_blocks
+    }
+
+    /// Last bytes accepted by the IPL, with their destination addresses.
+    #[must_use]
+    pub fn boot_accept_tail(&self) -> &[(u16, u8)] {
+        &self.boot_accept_tail
+    }
+
     /// Every CPU port write while the IPL is in control.
     #[must_use]
     pub fn boot_writes(&self) -> &[(u8, u8)] {
@@ -345,17 +381,37 @@ impl Apu {
         let expected_next = self.boot_expected;
         let ahead = value.wrapping_sub(expected_next);
 
+        if self.boot_decisions.len() >= 5000 {
+            self.boot_decisions.remove(0);
+        }
+        self.boot_decisions
+            .push((value, self.boot_expected, ahead == 0));
+
         if ahead == 0
             && let Some(byte) = self.boot_pending.take()
         {
             let address = self.boot_write_address as usize;
             self.aram[address % ARAM_SIZE] = byte;
+            if self.boot_accept_tail.len() >= 8 {
+                self.boot_accept_tail.remove(0);
+            }
+            self.boot_accept_tail.push((self.boot_write_address, byte));
             self.boot_write_address = self.boot_write_address.wrapping_add(1);
             self.boot_expected = self.boot_expected.wrapping_add(1);
             return;
         }
 
+        let rejected = (ahead == 0 && self.boot_pending.is_none()) || ahead > 127;
+        if rejected && self.boot_rejects.len() < 32 {
+            self.boot_rejects
+                .push((value, self.boot_expected, self.boot_pending));
+        }
+
         if ahead != 0 && ahead <= 127 {
+            if self.boot_blocks.len() < 16 {
+                self.boot_blocks
+                    .push((self.boot_address, self.boot_write_address));
+            }
             if self.boot_pending.unwrap_or(0) == 0 {
                 self.boot_jump(self.boot_address);
             } else {
