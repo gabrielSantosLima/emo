@@ -167,14 +167,28 @@ fn run(
         }
     };
 
+    let ipl_path = ipl_path.map(PathBuf::from).or_else(|| {
+        ["roms/ipl.bin", "ipl.bin"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|path| path.is_file())
+    });
+
     if let Some(ipl_path) = ipl_path {
-        match std::fs::read(ipl_path) {
-            Ok(bytes) => machine.memory_mut().apu_mut().load_ipl(&bytes),
+        match std::fs::read(&ipl_path) {
+            Ok(bytes) => {
+                machine.memory_mut().apu_mut().load_ipl(&bytes);
+                eprintln!("using IPL ROM {}", ipl_path.display());
+            }
             Err(error) => {
                 eprintln!("failed to read {}: {error}", ipl_path.display());
                 return ExitCode::FAILURE;
             }
         }
+    } else {
+        eprintln!(
+            "no IPL ROM found; using the experimental built-in boot protocol (place a 64-byte ipl.bin in roms/ to use the real one)"
+        );
     }
 
     if spc_trace > 0 {
