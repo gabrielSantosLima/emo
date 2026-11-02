@@ -43,6 +43,8 @@ pub struct Apu {
     dsp: Dsp,
     timers: [Timer; 3],
     cycles: u64,
+    #[serde(skip)]
+    apu_accumulator: u64,
     sample_accumulator: u32,
     #[serde(skip)]
     audio: Vec<i16>,
@@ -121,6 +123,7 @@ impl Apu {
             dsp: Dsp::new(),
             timers: [Timer::new(128), Timer::new(128), Timer::new(16)],
             cycles: 0,
+            apu_accumulator: 0,
             sample_accumulator: 0,
             audio: Vec::new(),
             control: 0x80,
@@ -176,6 +179,7 @@ impl Apu {
         self.dsp = Dsp::new();
         self.timers = [Timer::new(128), Timer::new(128), Timer::new(16)];
         self.cycles = 0;
+        self.apu_accumulator = 0;
         self.sample_accumulator = 0;
         self.audio.clear();
         self.control = 0x80;
@@ -517,7 +521,9 @@ impl Apu {
 
     /// Advance the APU by a number of main-CPU master cycles.
     pub fn advance(&mut self, master_cycles: u64) {
-        let mut remaining = master_cycles * APU_CLOCK / MASTER_CLOCK;
+        self.apu_accumulator += master_cycles * APU_CLOCK;
+        let mut remaining = self.apu_accumulator / MASTER_CLOCK;
+        self.apu_accumulator %= MASTER_CLOCK;
 
         while remaining > 0 {
             let used = u64::from(self.spc_step()).max(1);
