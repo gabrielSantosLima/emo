@@ -169,6 +169,14 @@ impl Cartridge {
             return Err(CartridgeError::Empty);
         }
 
+        // Some `.smc` dumps carry a 512-byte copier header. SNES images are
+        // multiples of 32 KiB, so a 512-byte remainder is that header.
+        let rom = if rom.len() % 1024 == 512 {
+            rom[512..].to_vec()
+        } else {
+            rom
+        };
+
         let (mapping, header, score) = detect_mapping(&rom);
         let info = decode_header(&rom, mapping, header, score);
         let sram = vec![0; info.sram_size];
@@ -481,6 +489,18 @@ mod tests {
         let hirom = Cartridge::from_rom(synthetic(Mapping::HiRom, 256, 1, 1, 0)).unwrap();
         assert!(hirom.sram_offset(0x20, 0x6000).is_some());
         assert!(hirom.sram_offset(0x20, 0x0000).is_none());
+    }
+
+    #[test]
+    fn strips_a_512_byte_copier_header() {
+        let mut rom = vec![0u8; 512];
+        rom.extend(synthetic(Mapping::LoRom, 256, 0, 1, 0x15));
+
+        let cart = Cartridge::from_rom(rom).unwrap();
+
+        assert_eq!(cart.info().title, "EMO TEST ROM");
+        assert_eq!(cart.info().coprocessor, Coprocessor::SuperFx);
+        assert_eq!(cart.rom().len(), 256 * 1024);
     }
 
     #[test]
