@@ -1,2 +1,6 @@
 # local planning
 PLAN.md
+
+# ROM images are never committed
+*.sfc
+*.smc
