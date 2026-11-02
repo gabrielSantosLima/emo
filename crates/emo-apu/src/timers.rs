@@ -1,9 +1,9 @@
 //! The three APU timers.
 
-/// A down-counter that drives one of the `$FD-$FF` output registers.
+/// A divider that drives one of the `$FD-$FF` output registers.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Timer {
-    divider: u32,
+    base: u32,
     counter: u32,
     target: u8,
     output: u8,
@@ -11,11 +11,12 @@ pub struct Timer {
 }
 
 impl Timer {
-    /// Create a timer with the given base divider.
+    /// Create a timer with the given base divider (128 for the 8 kHz timers,
+    /// 16 for the 64 kHz timer).
     #[must_use]
-    pub const fn new(divider: u32) -> Self {
+    pub const fn new(base: u32) -> Self {
         Self {
-            divider,
+            base,
             counter: 0,
             target: 0,
             output: 0,
@@ -23,13 +24,18 @@ impl Timer {
         }
     }
 
-    /// Set the target value.
+    /// Set the divider value. A target of zero divides by 256.
     pub fn set_target(&mut self, value: u8) {
         self.target = value;
     }
 
-    /// Enable or disable the timer.
+    /// Enable or disable the timer. Disabling clears the output and reloads
+    /// the divider, as the hardware does when CONTROL enables are cleared.
     pub fn set_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.output = 0;
+            self.counter = 0;
+        }
         self.enabled = enabled;
     }
 
@@ -39,20 +45,29 @@ impl Timer {
         self.output
     }
 
-    /// Advance one base clock.
+    /// Read the output and reset it to zero, as the hardware does at `$FD-$FF`.
+    pub fn take_output(&mut self) -> u8 {
+        let value = self.output;
+        self.output = 0;
+        value
+    }
+
+    /// Advance one base clock (one APU cycle).
     pub fn tick(&mut self) {
         if !self.enabled {
             return;
         }
 
         self.counter += 1;
-        if self.counter >= self.divider {
+        let divider = if self.target == 0 {
+            256
+        } else {
+            u32::from(self.target)
+        };
+        let period = self.base * divider;
+        if self.counter >= period {
             self.counter = 0;
-            self.output = if self.output == self.target {
-                0
-            } else {
-                self.output.wrapping_add(1)
-            };
+            self.output = (self.output + 1) & 0x0f;
         }
     }
 }
@@ -62,23 +77,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timer_counts_up_to_the_target() {
+    fn timer_counts_up_to_the_divider_and_wraps() {
         let mut timer = Timer::new(1);
         timer.set_target(2);
         timer.set_enabled(true);
 
         timer.tick();
+        assert_eq!(timer.output(), 0);
+        timer.tick();
         assert_eq!(timer.output(), 1);
         timer.tick();
-        assert_eq!(timer.output(), 2);
         timer.tick();
-        assert_eq!(timer.output(), 0);
+        assert_eq!(timer.output(), 2);
     }
 
     #[test]
-    fn disabled_timers_do_not_move() {
+    fn zero_divider_means_256() {
         let mut timer = Timer::new(1);
+        timer.set_target(0);
+        timer.set_enabled(true);
+
+        for _ in 0..255 {
+            timer.tick();
+        }
+        assert_eq!(timer.output(), 0);
         timer.tick();
+        assert_eq!(timer.output(), 1);
+    }
+
+    #[test]
+    fn output_is_four_bits_and_reads_reset_it() {
+        let mut timer = Timer::new(1);
+        timer.set_target(1);
+        timer.set_enabled(true);
+
+        for _ in 0..16 {
+            timer.tick();
+        }
+        assert_eq!(timer.output(), 0);
+
+        for _ in 0..3 {
+            timer.tick();
+        }
+        assert_eq!(timer.take_output(), 3);
         assert_eq!(timer.output(), 0);
     }
 }

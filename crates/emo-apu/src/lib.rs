@@ -588,7 +588,7 @@ impl ApuBus for SpcBus<'_> {
             0x00F4..=0x00F7 => self.input[usize::from(addr - 0x00F4)],
             0x00F2 => self.dsp.address(),
             0x00F3 => self.dsp.read_data(self.aram),
-            0x00FD..=0x00FF => self.timers[usize::from(addr - 0x00FD)].output(),
+            0x00FD..=0x00FF => self.timers[usize::from(addr - 0x00FD)].take_output(),
             _ => self.aram[usize::from(addr)],
         }
     }
