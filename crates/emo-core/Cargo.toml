@@ -1,0 +1,12 @@
+[package]
+name = "emo-core"
+description = "Machine core for emo: master-clock timing, bus and component wiring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

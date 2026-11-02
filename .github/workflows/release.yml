@@ -36,7 +36,13 @@ permissions:
   contents: write
 
 jobs:
+  # Quality gates must pass before a tag is created or a release is published.
+  quality:
+    name: Quality
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

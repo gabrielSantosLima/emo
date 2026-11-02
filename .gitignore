@@ -1,3 +1,6 @@
+# build artifacts
+/target
+
 # local planning
 PLAN.md
 
