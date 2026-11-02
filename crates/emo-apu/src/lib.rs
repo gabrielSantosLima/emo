@@ -48,6 +48,8 @@ pub struct Apu {
     audio: Vec<i16>,
 
     control: u8,
+    #[serde(skip)]
+    ipl: Option<Vec<u8>>,
     booting: bool,
     boot_started: bool,
     boot_address: u16,
@@ -122,6 +124,7 @@ impl Apu {
             sample_accumulator: 0,
             audio: Vec::new(),
             control: 0x80,
+            ipl: None,
             booting: true,
             boot_started: false,
             boot_address: 0,
@@ -151,6 +154,19 @@ impl Apu {
         self
     }
 
+    /// Provide an IPL ROM image (64 bytes). When present the APU executes it
+    /// instead of the built-in high-level boot protocol.
+    pub fn load_ipl(&mut self, bytes: &[u8]) {
+        self.ipl = Some(bytes.to_vec());
+        self.reset();
+    }
+
+    /// True when a real IPL image is installed.
+    #[must_use]
+    pub const fn has_ipl(&self) -> bool {
+        self.ipl.is_some()
+    }
+
     /// Return the APU to its power-on state.
     pub fn reset(&mut self) {
         self.aram.fill(0);
@@ -163,16 +179,21 @@ impl Apu {
         self.sample_accumulator = 0;
         self.audio.clear();
         self.control = 0x80;
-        self.booting = true;
+        self.booting = self.ipl.is_none();
         self.boot_started = false;
         self.boot_address = 0;
         self.boot_write_address = 0;
         self.boot_expected = 0;
         self.boot_pending = None;
         self.output = [0; 4];
-        self.output[0] = 0xAA;
-        self.output[1] = 0xBB;
-        self.spc.stopped = true;
+        if self.ipl.is_some() {
+            self.spc.reset(0xFFC0);
+            self.spc.sp = 0xEF;
+        } else {
+            self.output[0] = 0xAA;
+            self.output[1] = 0xBB;
+            self.spc.stopped = true;
+        }
     }
 
     /// Audio RAM.
@@ -224,6 +245,7 @@ impl Apu {
             input: &mut self.input,
             output: &mut self.output,
             control: &mut self.control,
+            ipl: self.ipl.as_deref(),
             dsp: &mut self.dsp,
             timers: &mut self.timers,
         };
@@ -354,6 +376,10 @@ impl Apu {
             self.port_trace.remove(0);
         }
         self.port_trace.push((port as u8, value));
+
+        if self.ipl.is_some() {
+            return;
+        }
 
         match port & 3 {
             2 => self.boot_address = (self.boot_address & 0xFF00) | u16::from(value),
@@ -537,12 +563,21 @@ struct SpcBus<'a> {
     input: &'a mut [u8; 4],
     output: &'a mut [u8; 4],
     control: &'a mut u8,
+    ipl: Option<&'a [u8]>,
     dsp: &'a mut Dsp,
     timers: &'a mut [Timer; 3],
 }
 
 impl ApuBus for SpcBus<'_> {
     fn read(&mut self, addr: u16) -> u8 {
+        if addr >= 0xFFC0
+            && *self.control & 0x80 != 0
+            && let Some(ipl) = self.ipl
+            && let Some(byte) = ipl.get(usize::from(addr - 0xFFC0))
+        {
+            return *byte;
+        }
+
         match addr {
             0x00F4..=0x00F7 => self.input[usize::from(addr - 0x00F4)],
             0x00F2 => self.dsp.address(),
@@ -553,6 +588,10 @@ impl ApuBus for SpcBus<'_> {
     }
 
     fn write(&mut self, addr: u16, value: u8) {
+        if addr >= 0xFFC0 && *self.control & 0x80 != 0 && self.ipl.is_some() {
+            return;
+        }
+
         match addr {
             0x00F4..=0x00F7 => self.output[usize::from(addr - 0x00F4)] = value,
             0x00F2 => self.dsp.set_address(value),
@@ -614,6 +653,20 @@ mod tests {
         apu.advance(100_000);
 
         assert!(apu.cycles() >= 1_000);
+    }
+
+    #[test]
+    fn external_ipl_rom_runs_and_posts_ports() {
+        let mut apu = Apu::new();
+        let mut rom = vec![0u8; 64];
+        // MOV $F4,#$AA ; BRA -2
+        rom[0..5].copy_from_slice(&[0x8F, 0xAA, 0xF4, 0x2F, 0xFE]);
+        apu.load_ipl(&rom);
+
+        apu.spc_step();
+        apu.spc_step();
+
+        assert_eq!(apu.cpu_read(0), 0xAA);
     }
 
     #[test]

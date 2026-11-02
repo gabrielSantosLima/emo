@@ -55,6 +55,9 @@ enum Command {
         /// Record the last N main-CPU instructions.
         #[arg(long, default_value_t = 0)]
         cpu_trace: usize,
+        /// Load a 64-byte IPL ROM instead of the built-in boot protocol.
+        #[arg(long)]
+        ipl: Option<PathBuf>,
     },
     /// Print the decoded header of a cartridge image.
     Info {
@@ -102,6 +105,7 @@ fn main() -> ExitCode {
             debug,
             spc_trace,
             cpu_trace,
+            ipl,
         } => run(
             &rom,
             frames,
@@ -112,6 +116,7 @@ fn main() -> ExitCode {
             debug,
             spc_trace,
             cpu_trace,
+            ipl.as_ref(),
         ),
         Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
@@ -130,6 +135,7 @@ fn run(
     debug: bool,
     spc_trace: usize,
     cpu_trace: usize,
+    ipl_path: Option<&PathBuf>,
 ) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -160,6 +166,16 @@ fn run(
             return ExitCode::FAILURE;
         }
     };
+
+    if let Some(ipl_path) = ipl_path {
+        match std::fs::read(ipl_path) {
+            Ok(bytes) => machine.memory_mut().apu_mut().load_ipl(&bytes),
+            Err(error) => {
+                eprintln!("failed to read {}: {error}", ipl_path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
 
     if spc_trace > 0 {
         machine.memory_mut().apu_mut().set_spc_trace(spc_trace);
@@ -242,6 +258,13 @@ fn run(
         println!("ipl accept tail: {:04x?}", apu.boot_accept_tail());
         println!("ipl blocks: {:04x?}", apu.boot_blocks());
         println!("ipl block tails: {:04x?}", apu.boot_block_tails());
+        println!(
+            "apu outputs: [{:02x} {:02x} {:02x} {:02x}]",
+            apu.cpu_read(0),
+            apu.cpu_read(1),
+            apu.cpu_read(2),
+            apu.cpu_read(3)
+        );
         println!("ipl rejects: {:?}", apu.boot_rejects());
         let all_decisions = apu.boot_decisions();
         if let Some(index) = all_decisions
@@ -277,7 +300,13 @@ fn run(
         }
 
         let spc_trace = apu.spc_trace();
-        for record in spc_trace.iter().rev().take(5000).rev() {
+        for record in spc_trace.iter().take(20) {
+            println!(
+                "spc-init {:04x}: {:02x} -> {:04x}",
+                record.pc, record.opcode, record.next_pc
+            );
+        }
+        for record in spc_trace.iter().rev().take(30).rev() {
             println!(
                 "spc {:04x}: {:02x} -> {:04x}  a={:02x} x={:02x} y={:02x} psw={:02x} sp={:02x}",
                 record.pc,
