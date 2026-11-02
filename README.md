@@ -31,6 +31,16 @@ cargo lint
 
 `cargo lint` is an alias for `cargo clippy --workspace --all-targets -- -D warnings`.
 
+## Inspecting a cartridge
+
+```bash
+cargo run -p emo-cli -- info path/to/game.sfc
+```
+
+Prints the decoded header: title, mapping, ROM/SRAM sizes, region, checksum,
+version and coprocessor. Cartridges with an unimplemented coprocessor are
+reported instead of silently misbehaving.
+
 ## CPU vectors
 
 The CPU core is validated against the `SingleStepTests/65816` vectors. Download
@@ -47,7 +57,7 @@ compares registers, RAM and the exact bus cycle count.
 
 | Path | Contents |
 | --- | --- |
-| `crates/emo-core` | Master-clock timing, bus and machine wiring |
+| `crates/emo-core` | Timing, address space and cartridge mapping |
 | `crates/emo-cpu` | 65C816 core: decoder, addressing modes, cycle accounting |
 | `crates/emo-cli` | The `emo` binary: timing report and instruction vector runner |
 | `docs/theory/` | Static theory guide on how the SNES works |

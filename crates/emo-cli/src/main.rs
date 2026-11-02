@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use emo_core::VideoStandard;
+use emo_core::{Cartridge, VideoStandard};
 
 mod vectors;
 
@@ -26,6 +26,11 @@ enum Command {
         /// Video standard to describe.
         #[arg(value_enum, default_value_t = StandardArg::Ntsc)]
         standard: StandardArg,
+    },
+    /// Print the decoded header of a cartridge image.
+    Info {
+        /// ROM image to inspect.
+        rom: PathBuf,
     },
     /// Run SingleStepTests/65816 vectors against the CPU core.
     Verify {
@@ -58,8 +63,60 @@ fn main() -> ExitCode {
             print!("{}", timing_report(standard.into()));
             ExitCode::SUCCESS
         }
+        Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
     }
+}
+
+/// Print the cartridge header of `path`.
+fn info(path: &PathBuf) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("failed to read {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let cartridge = match Cartridge::from_rom(bytes) {
+        Ok(cartridge) => cartridge,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let info = cartridge.info();
+    let standard = match info.video_standard {
+        VideoStandard::Ntsc => "NTSC",
+        VideoStandard::Pal => "PAL",
+    };
+
+    println!("title       {}", info.title);
+    println!("mapping     {}", info.mapping);
+    println!("rom size    {} bytes", info.rom_size);
+    println!("sram size   {} bytes", info.sram_size);
+    println!("region      {:#04x} ({standard})", info.region);
+    println!(
+        "checksum    {:#06x} ({})",
+        info.checksum,
+        if info.checksum_valid {
+            "valid"
+        } else {
+            "invalid"
+        }
+    );
+    println!("version     {:#04x}", info.version);
+    println!("coprocessor {}", info.coprocessor);
+
+    if cartridge.needs_coprocessor() {
+        eprintln!(
+            "warning: {} is not implemented; this cartridge will not run",
+            info.coprocessor
+        );
+    }
+
+    ExitCode::SUCCESS
 }
 
 /// Run every vector file under `path` and report divergences.

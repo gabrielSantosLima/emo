@@ -112,6 +112,9 @@ dependencies = [
 [[package]]
 name = "emo-core"
 version = "0.0.0"
+dependencies = [
+ "emo-cpu",
+]
 
 [[package]]
 name = "emo-cpu"

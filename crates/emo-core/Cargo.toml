@@ -8,5 +8,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+emo-cpu.workspace = true
+
 [lints]
 workspace = true
