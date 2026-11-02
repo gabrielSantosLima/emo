@@ -222,6 +222,17 @@ impl Machine {
             self.memory.ppu_mut().advance_to(self.clock);
             self.run_hdma();
 
+            // The NMI is raised by `advance_to` when the PPU crosses the
+            // vblank line. Take it before the frame boundary can break the
+            // loop; otherwise the interrupt slips into the next frame.
+            if self.memory.ppu_mut().take_nmi() {
+                self.memory.latch_joypad();
+                self.memory.note_nmi();
+                if self.memory.nmi_enabled() {
+                    self.cpu.set_nmi(true);
+                }
+            }
+
             let delta = self.clock - self.last_clock;
             if delta > 0 {
                 self.last_clock = self.clock;
@@ -269,14 +280,6 @@ impl Machine {
                 elapsed * MASTER_CYCLES_PER_CPU_CYCLE
             };
             self.clock += self.memory.take_pending_cycles();
-
-            if self.memory.ppu_mut().take_nmi() {
-                self.memory.latch_joypad();
-                self.memory.note_nmi();
-                if self.memory.nmi_enabled() {
-                    self.cpu.set_nmi(true);
-                }
-            }
         }
 
         self.frame += 1;

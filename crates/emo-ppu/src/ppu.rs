@@ -226,6 +226,24 @@ impl Ppu {
         self.frame_ready = false;
     }
 
+    /// Display control 1 (`$2100`).
+    #[must_use]
+    pub const fn display_control(&self) -> u8 {
+        self.inidisp
+    }
+
+    /// Main screen designation (`$212C`).
+    #[must_use]
+    pub const fn main_screen(&self) -> u8 {
+        self.tm
+    }
+
+    /// True when an NMI request is pending.
+    #[must_use]
+    pub const fn nmi_pending(&self) -> bool {
+        self.nmi
+    }
+
     /// Take the latched NMI request, if any.
     pub fn take_nmi(&mut self) -> bool {
         let pending = self.nmi;

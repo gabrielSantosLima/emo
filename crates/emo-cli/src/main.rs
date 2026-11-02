@@ -276,6 +276,14 @@ fn run(
             apu.spc().y,
             apu.spc().psw
         );
+        println!(
+            "nmitimen={:02x} inidisp={:02x} tm={:02x} vblank={} nmi={}",
+            machine.memory().nmitimen(),
+            machine.memory().ppu().display_control(),
+            machine.memory().ppu().main_screen(),
+            machine.memory().ppu().in_vblank(),
+            machine.memory().ppu().nmi_pending()
+        );
         println!("port writes: {:02x?}", apu.port_trace());
         let writes = apu.cpu_port_writes();
         let reads = apu.spc_port_reads();

@@ -89,6 +89,12 @@ impl Memory {
         &mut self.apu
     }
 
+    /// Value written to `$4200`.
+    #[must_use]
+    pub const fn nmitimen(&self) -> u8 {
+        self.nmitimen
+    }
+
     /// True when `$4200` bit 7 enables NMI.
     #[must_use]
     pub const fn nmi_enabled(&self) -> bool {
