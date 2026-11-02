@@ -47,6 +47,7 @@ pub struct Apu {
     #[serde(skip)]
     audio: Vec<i16>,
 
+    control: u8,
     booting: bool,
     boot_started: bool,
     boot_address: u16,
@@ -118,6 +119,7 @@ impl Apu {
             cycles: 0,
             sample_accumulator: 0,
             audio: Vec::new(),
+            control: 0x80,
             booting: true,
             boot_started: false,
             boot_address: 0,
@@ -157,6 +159,7 @@ impl Apu {
         self.cycles = 0;
         self.sample_accumulator = 0;
         self.audio.clear();
+        self.control = 0x80;
         self.booting = true;
         self.boot_started = false;
         self.boot_address = 0;
@@ -215,8 +218,9 @@ impl Apu {
 
         let mut bus = SpcBus {
             aram: &mut self.aram,
-            input: &self.input,
+            input: &mut self.input,
             output: &mut self.output,
+            control: &mut self.control,
             dsp: &mut self.dsp,
             timers: &mut self.timers,
         };
@@ -520,8 +524,9 @@ impl Apu {
 
 struct SpcBus<'a> {
     aram: &'a mut Box<[u8]>,
-    input: &'a [u8; 4],
+    input: &'a mut [u8; 4],
     output: &'a mut [u8; 4],
+    control: &'a mut u8,
     dsp: &'a mut Dsp,
     timers: &'a mut [Timer; 3],
 }
@@ -547,9 +552,18 @@ impl ApuBus for SpcBus<'_> {
                 self.timers[index].set_target(value);
             }
             0x00F1 => {
+                *self.control = value;
                 self.timers[0].set_enabled(value & 0x01 != 0);
                 self.timers[1].set_enabled(value & 0x02 != 0);
                 self.timers[2].set_enabled(value & 0x04 != 0);
+                if value & 0x10 != 0 {
+                    self.input[0] = 0;
+                    self.input[1] = 0;
+                }
+                if value & 0x20 != 0 {
+                    self.input[2] = 0;
+                    self.input[3] = 0;
+                }
             }
             _ => self.aram[usize::from(addr)] = value,
         }
