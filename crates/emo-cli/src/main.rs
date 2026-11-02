@@ -237,10 +237,23 @@ fn run(
         println!("aram 09e0: {:02x?}", &aram[0x09E0..0x0A00]);
         println!("aram 0500: {:02x?}", &aram[0x0500..0x0520]);
         println!("aram 0550: {:02x?}", &aram[0x0550..0x0570]);
+        println!("aram 1338: {:02x?}", &aram[0x1338..0x1348]);
         println!("aram 1360: {:02x?}", &aram[0x1360..0x1440]);
         println!("ipl accept tail: {:04x?}", apu.boot_accept_tail());
         println!("ipl blocks: {:04x?}", apu.boot_blocks());
+        println!("ipl block tails: {:04x?}", apu.boot_block_tails());
         println!("ipl rejects: {:?}", apu.boot_rejects());
+        let all_decisions = apu.boot_decisions();
+        if let Some(index) = all_decisions
+            .iter()
+            .position(|(counter, expected, _)| *counter == 0x41 && *expected == 0x3E)
+        {
+            let start = index.saturating_sub(12);
+            println!(
+                "decisions around block 1 end ({index}): {:?}",
+                &all_decisions[start..=index]
+            );
+        }
         let decisions = apu.boot_decisions();
         println!(
             "ipl decisions (last 32 of {}): {:?}",

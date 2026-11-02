@@ -69,6 +69,8 @@ pub struct Apu {
     #[serde(skip)]
     boot_blocks: Vec<(u16, u16)>,
     #[serde(skip)]
+    boot_block_tails: Vec<Vec<(u16, u8)>>,
+    #[serde(skip)]
     boot_decisions: Vec<(u8, u8, bool)>, // (counter, expected, accepted)
     #[serde(skip)]
     boot_rejects: Vec<(u8, u8, Option<u8>)>,
@@ -133,6 +135,7 @@ impl Apu {
             boot_writes: Vec::new(),
             boot_accept_tail: Vec::new(),
             boot_blocks: Vec::new(),
+            boot_block_tails: Vec::new(),
             boot_decisions: Vec::new(),
             boot_rejects: Vec::new(),
             trace: std::collections::VecDeque::new(),
@@ -272,6 +275,12 @@ impl Apu {
         &self.boot_decisions
     }
 
+    /// Last accepted bytes of each finished block.
+    #[must_use]
+    pub fn boot_block_tails(&self) -> &[Vec<(u16, u8)>] {
+        &self.boot_block_tails
+    }
+
     /// Recorded block ranges (start, end exclusive).
     #[must_use]
     pub fn boot_blocks(&self) -> &[(u16, u16)] {
@@ -385,7 +394,7 @@ impl Apu {
         let expected_next = self.boot_expected;
         let ahead = value.wrapping_sub(expected_next);
 
-        if self.boot_decisions.len() >= 5000 {
+        if self.boot_decisions.len() >= 20000 {
             self.boot_decisions.remove(0);
         }
         self.boot_decisions
@@ -415,6 +424,7 @@ impl Apu {
             if self.boot_blocks.len() < 16 {
                 self.boot_blocks
                     .push((self.boot_address, self.boot_write_address));
+                self.boot_block_tails.push(self.boot_accept_tail.clone());
             }
             if self.boot_pending.unwrap_or(0) == 0 {
                 self.boot_jump(self.boot_address);
