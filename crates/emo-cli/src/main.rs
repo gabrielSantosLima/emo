@@ -20,6 +20,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Print the master-clock timing of a video standard.
     Timing {
@@ -46,6 +47,9 @@ enum Command {
         /// Write the final frame as a PPM image.
         #[arg(long)]
         dump_frame: Option<PathBuf>,
+        /// Write the final 64 KiB of VRAM to a file.
+        #[arg(long)]
+        dump_vram: Option<PathBuf>,
         /// Print CPU and APU state after the run.
         #[arg(long)]
         debug: bool,
@@ -105,6 +109,7 @@ fn main() -> ExitCode {
             sram,
             save_state,
             dump_frame,
+            dump_vram,
             debug,
             spc_trace,
             cpu_trace,
@@ -117,6 +122,7 @@ fn main() -> ExitCode {
             sram.as_ref(),
             save_state.as_ref(),
             dump_frame.as_ref(),
+            dump_vram.as_ref(),
             debug,
             spc_trace,
             cpu_trace,
@@ -137,6 +143,7 @@ fn run(
     sram_path: Option<&PathBuf>,
     save_state_path: Option<&PathBuf>,
     dump_frame_path: Option<&PathBuf>,
+    dump_vram_path: Option<&PathBuf>,
     debug: bool,
     spc_trace: usize,
     cpu_trace: usize,
@@ -390,6 +397,13 @@ fn run(
             eprintln!("failed to write {}: {error}", dump_frame_path.display());
             return ExitCode::FAILURE;
         }
+    }
+
+    if let Some(dump_vram_path) = dump_vram_path
+        && let Err(error) = std::fs::write(dump_vram_path, machine.memory().ppu().vram())
+    {
+        eprintln!("failed to write {}: {error}", dump_vram_path.display());
+        return ExitCode::FAILURE;
     }
 
     if let Some(sram_path) = sram_path
