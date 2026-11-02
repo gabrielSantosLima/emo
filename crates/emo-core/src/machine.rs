@@ -92,6 +92,7 @@ struct StateBlob {
     frame: u64,
     cpu: Cpu,
     ppu: emo_ppu::Ppu,
+    apu: emo_apu::Apu,
     wram: Vec<u8>,
     sram: Vec<u8>,
 }
@@ -106,6 +107,7 @@ pub struct Machine {
     clock: u64,
     frame: u64,
     last_line: u64,
+    last_clock: u64,
 }
 
 impl Machine {
@@ -126,6 +128,7 @@ impl Machine {
             clock: 0,
             frame: 0,
             last_line: 0,
+            last_clock: 0,
         };
         machine.reset();
 
@@ -136,9 +139,11 @@ impl Machine {
     pub fn reset(&mut self) {
         self.cpu.reset(&mut self.memory);
         self.memory.ppu_mut().reset_timing();
+        self.memory.apu_mut().reset();
         self.clock = 0;
         self.frame = 0;
         self.last_line = 0;
+        self.last_clock = 0;
     }
 
     /// CPU state.
@@ -191,6 +196,12 @@ impl Machine {
             self.memory.ppu_mut().advance_to(self.clock);
             self.run_hdma();
 
+            let delta = self.clock - self.last_clock;
+            if delta > 0 {
+                self.last_clock = self.clock;
+                self.memory.apu_mut().advance(delta);
+            }
+
             if self.memory.ppu_mut().frame_ready() {
                 self.memory.ppu_mut().clear_frame_ready();
                 break;
@@ -241,6 +252,17 @@ impl Machine {
         }
 
         self.clock += self.memory.take_pending_cycles();
+    }
+
+    /// Mixed stereo audio produced so far.
+    #[must_use]
+    pub fn audio(&self) -> &[i16] {
+        self.memory.apu().audio()
+    }
+
+    /// Take the accumulated audio samples.
+    pub fn take_audio(&mut self) -> Vec<i16> {
+        self.memory.apu_mut().take_audio()
     }
 
     /// Fingerprint of the current machine state.
@@ -295,6 +317,7 @@ impl Machine {
             frame: self.frame,
             cpu: self.cpu.clone(),
             ppu: self.memory.ppu().clone(),
+            apu: self.memory.apu().clone(),
             wram: self.memory.wram().to_vec(),
             sram: self.memory.cartridge().sram().to_vec(),
         };
@@ -320,6 +343,7 @@ impl Machine {
         self.clock = blob.clock;
         self.frame = blob.frame;
         *self.memory.ppu_mut() = blob.ppu;
+        *self.memory.apu_mut() = blob.apu;
         self.memory.wram_mut().copy_from_slice(&blob.wram);
         self.memory.cartridge_mut().load_sram(&blob.sram);
 

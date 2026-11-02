@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/emo-cli", "crates/emo-core", "crates/emo-cpu", "crates/emo-ppu"]
+members = ["crates/emo-apu", "crates/emo-cli", "crates/emo-core", "crates/emo-cpu", "crates/emo-ppu"]
 
 [workspace.package]
 version = "0.0.0"
@@ -16,6 +16,7 @@ description = "A from-scratch Super Nintendo Entertainment System emulator."
 emo-core = { path = "crates/emo-core" }
 emo-cpu = { path = "crates/emo-cpu" }
 emo-ppu = { path = "crates/emo-ppu" }
+emo-apu = { path = "crates/emo-apu" }
 thiserror = "2.0"
 tracing = "0.1"
 clap = { version = "4.5", features = ["derive"] }

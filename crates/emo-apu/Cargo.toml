@@ -1,0 +1,15 @@
+[package]
+name = "emo-apu"
+description = "Audio processing unit for emo: ARAM, ports, timers and the S-DSP."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

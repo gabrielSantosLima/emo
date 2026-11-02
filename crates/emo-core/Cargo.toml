@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 emo-cpu.workspace = true
 emo-ppu.workspace = true
+emo-apu.workspace = true
 serde.workspace = true
 bincode.workspace = true
 

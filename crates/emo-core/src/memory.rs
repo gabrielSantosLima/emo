@@ -5,6 +5,7 @@
 //! answers. The PPU, APU and CPU register windows are wired in later
 //! milestones; today they read as open bus.
 
+use emo_apu::Apu;
 use emo_cpu::Bus;
 use emo_ppu::{Ppu, Timing};
 
@@ -24,6 +25,7 @@ pub struct Memory {
     wram: Box<[u8]>,
     cartridge: Cartridge,
     ppu: Ppu,
+    apu: Apu,
     channels: [DmaChannel; 8],
     nmitimen: u8,
     nmi_flag: bool,
@@ -45,6 +47,7 @@ impl Memory {
             wram: vec![0; WRAM_SIZE].into_boxed_slice(),
             cartridge,
             ppu: Ppu::new(timing),
+            apu: Apu::new(),
             channels: std::array::from_fn(|_| DmaChannel::default()),
             nmitimen: 0,
             nmi_flag: false,
@@ -63,6 +66,17 @@ impl Memory {
     /// Mutable video chip.
     pub fn ppu_mut(&mut self) -> &mut Ppu {
         &mut self.ppu
+    }
+
+    /// Audio subsystem.
+    #[must_use]
+    pub const fn apu(&self) -> &Apu {
+        &self.apu
+    }
+
+    /// Mutable audio subsystem.
+    pub fn apu_mut(&mut self) -> &mut Apu {
+        &mut self.apu
     }
 
     /// True when `$4200` bit 7 enables NMI.
@@ -228,6 +242,8 @@ impl Memory {
     fn b_write(&mut self, address: u16, value: u8) {
         if (0x2100..=0x213F).contains(&address) {
             self.ppu.write_register(address, value);
+        } else if (0x2140..=0x2143).contains(&address) {
+            self.apu.cpu_write(usize::from(address - 0x2140), value);
         }
     }
 
@@ -284,6 +300,10 @@ impl Memory {
             return Some(self.ppu.read_register(addr));
         }
 
+        if (0x2140..=0x2143).contains(&addr) && matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
+            return Some(self.apu.cpu_read(usize::from(addr - 0x2140)));
+        }
+
         if matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
             match addr {
                 0x4210 => {
@@ -331,6 +351,11 @@ impl Memory {
 
         if (0x2100..=0x213F).contains(&addr) && matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
             self.ppu.write_register(addr, value);
+            return true;
+        }
+
+        if (0x2140..=0x2143).contains(&addr) && matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
+            self.apu.cpu_write(usize::from(addr - 0x2140), value);
             return true;
         }
 
