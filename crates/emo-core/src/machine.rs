@@ -271,6 +271,7 @@ impl Machine {
             self.clock += self.memory.take_pending_cycles();
 
             if self.memory.ppu_mut().take_nmi() {
+                self.memory.latch_joypad();
                 self.memory.note_nmi();
                 if self.memory.nmi_enabled() {
                     self.cpu.set_nmi(true);

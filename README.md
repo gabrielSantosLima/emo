@@ -57,6 +57,10 @@ blanking and prints the master clock plus a state hash per frame. Useful flags:
 - `--ipl PATH` - use a 64-byte SPC700 IPL ROM instead of the built-in boot
   protocol. If `roms/ipl.bin` or `ipl.bin` exists it is picked up automatically.
   The built-in protocol is experimental and does not match commercial drivers.
+- `--press BUTTON@FRAME` - hold a controller button for eight frames (for example
+  `--press start@600`). Buttons: `b y select start up down left right a x l r`.
+  The automatic joypad registers (`$4218-$421F`) and the manual serial port
+  (`$4016`) are emulated; auto-read latches at vblank when `$4200` bit 0 is set.
 
 ## CPU vectors
 

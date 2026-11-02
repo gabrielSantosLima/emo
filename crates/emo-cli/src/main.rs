@@ -58,6 +58,9 @@ enum Command {
         /// Load a 64-byte IPL ROM instead of the built-in boot protocol.
         #[arg(long)]
         ipl: Option<PathBuf>,
+        /// Hold a controller button for eight frames (`start@600`).
+        #[arg(long = "press", value_name = "BUTTON@FRAME")]
+        press: Vec<String>,
     },
     /// Print the decoded header of a cartridge image.
     Info {
@@ -106,6 +109,7 @@ fn main() -> ExitCode {
             spc_trace,
             cpu_trace,
             ipl,
+            press,
         } => run(
             &rom,
             frames,
@@ -117,6 +121,7 @@ fn main() -> ExitCode {
             spc_trace,
             cpu_trace,
             ipl.as_ref(),
+            &press,
         ),
         Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
@@ -136,6 +141,7 @@ fn run(
     spc_trace: usize,
     cpu_trace: usize,
     ipl_path: Option<&PathBuf>,
+    press: &[String],
 ) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -198,8 +204,31 @@ fn run(
         machine.set_cpu_trace(cpu_trace);
     }
 
+    let mut presses = Vec::new();
+    for spec in press {
+        let Some((name, frame)) = spec.split_once('@') else {
+            eprintln!("invalid --press {spec:?}; expected BUTTON@FRAME");
+            return ExitCode::FAILURE;
+        };
+        let Some(button) = button_mask(name) else {
+            eprintln!("unknown button {name:?}");
+            return ExitCode::FAILURE;
+        };
+        let Ok(frame) = frame.parse::<u64>() else {
+            eprintln!("invalid frame in --press {spec:?}");
+            return ExitCode::FAILURE;
+        };
+        presses.push((frame, button));
+    }
+
     let mut last_hash = 0;
-    for _ in 0..frames {
+    for frame in 0..frames {
+        let buttons = presses
+            .iter()
+            .filter(|(start, _)| frame >= *start && frame < start + 8)
+            .fold(0u16, |acc, (_, button)| acc | button);
+        machine.memory_mut().set_buttons(0, buttons);
+
         let result = machine.run_frame();
         last_hash = result.hash;
         if hash {
@@ -523,6 +552,24 @@ fn timing_report(standard: VideoStandard) -> String {
         report.push_str(&format!("  {name:<20}{value}\n"));
     }
     report
+}
+
+fn button_mask(name: &str) -> Option<u16> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "b" => 0x8000,
+        "y" => 0x4000,
+        "select" => 0x2000,
+        "start" => 0x1000,
+        "up" => 0x0800,
+        "down" => 0x0400,
+        "left" => 0x0200,
+        "right" => 0x0100,
+        "a" => 0x0080,
+        "x" => 0x0040,
+        "l" => 0x0020,
+        "r" => 0x0010,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

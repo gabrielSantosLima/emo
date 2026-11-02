@@ -32,6 +32,11 @@ pub struct Memory {
     hdma_enable: u8,
     pending_cycles: u64,
     open_bus: u8,
+    buttons: [u16; 4],
+    joy_latch: [u16; 4],
+    manual_shift: [u16; 2],
+    manual_index: [u8; 2],
+    strobe: bool,
 }
 
 impl Memory {
@@ -54,6 +59,11 @@ impl Memory {
             hdma_enable: 0,
             pending_cycles: 0,
             open_bus: 0,
+            buttons: [0; 4],
+            joy_latch: [0; 4],
+            manual_shift: [0; 2],
+            manual_index: [0; 2],
+            strobe: false,
         }
     }
 
@@ -85,9 +95,46 @@ impl Memory {
         self.nmitimen & 0x80 != 0
     }
 
+    /// Set the pressed buttons for a controller port (active high).
+    ///
+    /// The 16-bit word follows the auto-joypad layout:
+    /// `byetUDLR axlr0000`, with bits 3-0 reserved for the controller ID.
+    pub fn set_buttons(&mut self, port: usize, buttons: u16) {
+        self.buttons[port & 3] = buttons & 0xfff0;
+    }
+
+    /// Latch the controller state, as auto-joypad does at the start of vblank.
+    pub fn latch_joypad(&mut self) {
+        if self.nmitimen & 0x01 == 0 {
+            return;
+        }
+        self.joy_latch = self.buttons;
+    }
+
     /// Record that the PPU raised NMI.
     pub fn note_nmi(&mut self) {
         self.nmi_flag = true;
+    }
+
+    fn read_manual_joypad(&mut self, port: usize) -> u8 {
+        if self.strobe {
+            // While the latch is held, the shift register keeps reloading and
+            // every read returns the first bit (B, active low).
+            return u8::from(self.manual_shift[port] & 0x8000 == 0);
+        }
+        let index = self.manual_index[port];
+        let bit = if index < 12 {
+            // The serial transfer sends bit 15 (B) first and is active low.
+            let pressed = (self.manual_shift[port] >> (15 - index)) & 1;
+            u8::from(pressed == 0)
+        } else if index < 16 {
+            // Signature: a standard controller reports 0000.
+            0
+        } else {
+            1
+        };
+        self.manual_index[port] = (index + 1).min(31);
+        bit
     }
 
     /// Take the latched NMI flag (`$4210` bit 7).
@@ -319,11 +366,26 @@ impl Memory {
                 0x4211 => return Some(0),
                 0x4212 => {
                     let vblank = self.ppu.in_vblank();
-                    return Some((u8::from(vblank) << 7) | 0x01);
+                    // Bit 0 is the auto-joypad busy flag. The latch completes
+                    // as soon as vblank starts, so it is never busy here.
+                    return Some(u8::from(vblank) << 7);
                 }
+                0x4016 => return Some(self.read_manual_joypad(0)),
+                0x4017 => return Some(self.read_manual_joypad(1)),
                 0x4213 => return Some(self.open_bus),
                 0x4214..=0x4217 => return Some(0),
-                0x4218..=0x421F => return Some(0),
+                0x4218..=0x421F => {
+                    let index = usize::from(addr - 0x4218);
+                    let port = index / 2;
+                    let value = self.joy_latch[port];
+                    // Auto-joypad registers are active high; bits 3-0 of the
+                    // low byte are the controller ID (0000 for a standard pad).
+                    return Some(if index % 2 == 0 {
+                        value as u8 & 0xf0
+                    } else {
+                        (value >> 8) as u8
+                    });
+                }
                 _ => {}
             }
         }
@@ -369,6 +431,14 @@ impl Memory {
             match addr {
                 0x4200 => {
                     self.nmitimen = value;
+                    return true;
+                }
+                0x4016 => {
+                    self.strobe = value & 0x01 != 0;
+                    if self.strobe {
+                        self.manual_shift = [self.buttons[0], self.buttons[1]];
+                        self.manual_index = [0; 2];
+                    }
                     return true;
                 }
                 0x420B => {
@@ -496,6 +566,35 @@ mod tests {
         memory.cartridge_mut().load_sram(&[0x11, 0x22]);
         assert_eq!(memory.cartridge().sram()[0], 0x11);
         assert_eq!(memory.cartridge().sram()[1], 0x22);
+    }
+
+    #[test]
+    fn auto_joypad_reports_active_low_buttons() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+        memory.write(0x00, 0x4200, 0x81);
+        memory.set_buttons(0, 0x1000); // Start
+
+        memory.latch_joypad();
+
+        assert_eq!(memory.read(0x00, 0x4218), 0x00);
+        assert_eq!(memory.read(0x00, 0x4219), 0x10);
+    }
+
+    #[test]
+    fn manual_joypad_shift_uses_serial_order() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+        memory.set_buttons(0, 0x8000); // B
+
+        memory.write(0x00, 0x4016, 1);
+        memory.write(0x00, 0x4016, 0);
+
+        let mut word = 0u16;
+        for index in 0..16 {
+            word |= u16::from(memory.read(0x00, 0x4016)) << (15 - index);
+        }
+
+        assert_eq!(word, 0x7ff0);
+        assert_eq!(memory.read(0x00, 0x4016), 1);
     }
 
     #[test]
