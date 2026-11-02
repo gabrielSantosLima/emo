@@ -72,7 +72,7 @@ compares registers, RAM and the exact bus cycle count.
 | Path | Contents |
 | --- | --- |
 | `crates/emo-core` | Timing, address space, cartridge mapping and the machine scheduler |
-| `crates/emo-ppu` | Scanline PPU: registers, VRAM/CGRAM/OAM, backgrounds and sprites |
+| `crates/emo-ppu` | Scanline PPU: registers, VRAM/CGRAM/OAM, backgrounds (0-4, 7), sprites, mosaic |
 | `crates/emo-cpu` | 65C816 core: decoder, addressing modes, cycle accounting |
 | `crates/emo-cli` | The `emo` binary: timing report and instruction vector runner |
 | `docs/theory/` | Static theory guide on how the SNES works |

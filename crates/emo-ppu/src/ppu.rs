@@ -293,16 +293,13 @@ impl Ppu {
             0x2116 => self.vmaddr = (self.vmaddr & 0xFF00) | u16::from(value),
             0x2117 => self.vmaddr = (self.vmaddr & 0x00FF) | (u16::from(value & 1) << 8),
             0x2118 => {
-                self.write_vram_word(self.vmaddr, (self.vram_latch & 0xFF00) | u16::from(value));
+                self.write_vram_byte(self.vmaddr, value, false);
                 if self.vmain & 0x80 == 0 {
                     self.increment_vram();
                 }
             }
             0x2119 => {
-                self.write_vram_word(
-                    self.vmaddr,
-                    (self.vram_latch & 0x00FF) | (u16::from(value) << 8),
-                );
+                self.write_vram_byte(self.vmaddr, value, true);
                 if self.vmain & 0x80 != 0 {
                     self.increment_vram();
                 }
@@ -398,10 +395,16 @@ impl Ppu {
         u16::from(self.vram[index]) | (u16::from(self.vram[index + 1]) << 8)
     }
 
+    #[cfg(test)]
     fn write_vram_word(&mut self, addr: u16, value: u16) {
         let index = usize::from(addr & 0x7FFF) * 2;
         self.vram[index] = value as u8;
         self.vram[index + 1] = (value >> 8) as u8;
+    }
+
+    fn write_vram_byte(&mut self, addr: u16, value: u8, high: bool) {
+        let index = usize::from(addr & 0x7FFF) * 2 + usize::from(high);
+        self.vram[index] = value;
     }
 
     /* ---------- Rendering ---------- */
@@ -476,6 +479,21 @@ impl Ppu {
     }
 
     fn bg_pixel(&self, layer: usize, x: u16, y: u16, mode: u8) -> Option<(u16, u8)> {
+        if mode == 7 {
+            return if layer == 0 {
+                self.mode7_pixel(x, y)
+            } else {
+                None
+            };
+        }
+
+        let mosaic = u16::from((self.mosaic >> 4) & 0x0F);
+        let (x, y) = if mosaic > 0 {
+            (x - x % (mosaic + 1), y - y % (mosaic + 1))
+        } else {
+            (x, y)
+        };
+
         let (bpp, palette_base) = match (mode, layer) {
             (0, _) => (2, layer as u16 * 8),
             (1, 0 | 1) => (4, 0),
@@ -554,7 +572,61 @@ impl Ppu {
         Some((index, priority))
     }
 
+    fn mode7_pixel(&self, x: u16, y: u16) -> Option<(u16, u8)> {
+        let m7x = sign13(self.m7[4] as u16);
+        let m7y = sign13(self.m7[5] as u16);
+        let hofs = sign13(self.bghofs[0]);
+        let vofs = sign13(self.bgvofs[0]);
+
+        let mut screen_x = i32::from(x);
+        let mut screen_y = i32::from(y);
+        if self.m7sel & 0x01 != 0 {
+            screen_x = 255 - screen_x;
+        }
+        if self.m7sel & 0x02 != 0 {
+            screen_y = 255 - screen_y;
+        }
+
+        let a = i32::from(self.m7[0]);
+        let b = i32::from(self.m7[1]);
+        let c = i32::from(self.m7[2]);
+        let d = i32::from(self.m7[3]);
+
+        let org_x = screen_x + hofs - m7x;
+        let org_y = screen_y + vofs - m7y;
+
+        let vram_x = a * org_x + b * org_y + m7x * 256;
+        let vram_y = c * org_x + d * org_y + m7y * 256;
+
+        let mut px = vram_x >> 8;
+        let mut py = vram_y >> 8;
+
+        if self.m7sel & 0x80 != 0 {
+            px &= 0x3FF;
+            py &= 0x3FF;
+        } else if !(0..1024).contains(&px) || !(0..1024).contains(&py) {
+            return None;
+        }
+
+        let tile = self.vram[((((py >> 3) & 0x7F) * 128 + ((px >> 3) & 0x7F)) * 2) as usize];
+        let address = usize::from(tile) * 128 + ((py & 7) * 16 + (px & 7) * 2 + 1) as usize;
+        let pixel = self.vram[address];
+
+        if pixel == 0 {
+            None
+        } else {
+            Some((u16::from(pixel), 3))
+        }
+    }
+
     fn sprite_pixel(&self, x: u16, y: u16) -> Option<(u16, u8)> {
+        let mosaic = u16::from(self.mosaic & 0x0F);
+        let (x, y) = if mosaic > 0 {
+            (x - x % (mosaic + 1), y - y % (mosaic + 1))
+        } else {
+            (x, y)
+        };
+
         let size_pair = (self.obsel >> 5) & 0x07;
         let (small, large) = match size_pair {
             0 => (8u16, 16u16),
@@ -615,6 +687,15 @@ impl Ppu {
         }
 
         best
+    }
+}
+
+fn sign13(value: u16) -> i32 {
+    let value = i32::from(value & 0x1FFF);
+    if value & 0x1000 != 0 {
+        value - 0x2000
+    } else {
+        value
     }
 }
 
@@ -713,6 +794,63 @@ mod tests {
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
         assert_eq!(&ppu.framebuffer()[..3], &[0, 248, 0]);
+    }
+
+    #[test]
+    fn mode7_identity_matrix_samples_the_map() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 5, 31, 0, 0);
+
+        ppu.write_register(0x2105, 0x07);
+        ppu.write_register(0x212C, 0x01);
+        ppu.write_register(0x211A, 0x00);
+
+        // M7A = 0x0100, M7D = 0x0100, B = C = 0, centers at 0.
+        let matrix = [0x00u8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+        for (offset, value) in matrix.into_iter().enumerate() {
+            ppu.write_register(0x211B + offset as u16, value);
+        }
+        ppu.write_register(0x211F, 0x00);
+        ppu.write_register(0x211F, 0x00);
+        ppu.write_register(0x2120, 0x00);
+        ppu.write_register(0x2120, 0x00);
+
+        // Map entry 0 -> tile 1. Tile 1, pixel (0, 0) -> color 5.
+        ppu.write_register(0x2115, 0x80);
+        ppu.write_register(0x2116, 0x00);
+        ppu.write_register(0x2117, 0x00);
+        ppu.write_register(0x2118, 0x01);
+        ppu.write_register(0x2119, 0x00);
+        ppu.write_register(0x2116, 0x40);
+        ppu.write_register(0x2117, 0x00);
+        ppu.write_register(0x2118, 0x00);
+        ppu.write_register(0x2119, 0x05);
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
+    }
+
+    #[test]
+    fn mosaic_quantises_background_sampling() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 1, 31, 0, 0);
+
+        ppu.write_register(0x2107, 0x00);
+        ppu.write_register(0x210B, 0x01);
+        ppu.write_register(0x2105, 0x00);
+        ppu.write_register(0x212C, 0x01);
+        ppu.write_register(0x2106, 0x70); // BG mosaic size 8
+
+        for row in 0..8 {
+            ppu.write_vram_word(0x1000 + row, 0x00FF);
+        }
+        ppu.write_vram_word(0, 0x0000);
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[248, 0, 0]);
     }
 
     #[test]
