@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cartridge;
+pub mod dma;
 pub mod machine;
 pub mod memory;
 pub mod timing;

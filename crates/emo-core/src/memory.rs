@@ -10,6 +10,7 @@ use emo_ppu::{Ppu, Timing};
 
 use crate::VideoStandard;
 use crate::cartridge::Cartridge;
+use crate::dma::{DmaChannel, b_address};
 
 /// Work RAM size in bytes.
 pub const WRAM_SIZE: usize = 128 * 1024;
@@ -23,6 +24,11 @@ pub struct Memory {
     wram: Box<[u8]>,
     cartridge: Cartridge,
     ppu: Ppu,
+    channels: [DmaChannel; 8],
+    nmitimen: u8,
+    nmi_flag: bool,
+    hdma_enable: u8,
+    pending_cycles: u64,
     open_bus: u8,
 }
 
@@ -39,6 +45,11 @@ impl Memory {
             wram: vec![0; WRAM_SIZE].into_boxed_slice(),
             cartridge,
             ppu: Ppu::new(timing),
+            channels: std::array::from_fn(|_| DmaChannel::default()),
+            nmitimen: 0,
+            nmi_flag: false,
+            hdma_enable: 0,
+            pending_cycles: 0,
             open_bus: 0,
         }
     }
@@ -52,6 +63,180 @@ impl Memory {
     /// Mutable video chip.
     pub fn ppu_mut(&mut self) -> &mut Ppu {
         &mut self.ppu
+    }
+
+    /// True when `$4200` bit 7 enables NMI.
+    #[must_use]
+    pub const fn nmi_enabled(&self) -> bool {
+        self.nmitimen & 0x80 != 0
+    }
+
+    /// Record that the PPU raised NMI.
+    pub fn note_nmi(&mut self) {
+        self.nmi_flag = true;
+    }
+
+    /// Take the latched NMI flag (`$4210` bit 7).
+    pub fn take_nmi_flag(&mut self) -> bool {
+        let flag = self.nmi_flag;
+        self.nmi_flag = false;
+        flag
+    }
+
+    /// Master cycles consumed by DMA/HDMA since the last call.
+    pub fn take_pending_cycles(&mut self) -> u64 {
+        let cycles = self.pending_cycles;
+        self.pending_cycles = 0;
+        cycles
+    }
+
+    /// Start a general-purpose DMA transfer for the selected channels.
+    pub fn start_dma(&mut self, mask: u8) {
+        for index in 0..8 {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
+
+            let mut channel = self.channels[index].clone();
+            let mut count = u32::from(channel.das);
+            if count == 0 {
+                count = 0x1_0000;
+            }
+
+            let mut address = (u32::from(channel.a1b) << 16) | u32::from(channel.a1t);
+            let b = b_address(&channel);
+            let offsets = channel.b_offsets();
+            let step = channel.a_step();
+
+            for index in 0..count {
+                let offset = offsets[index as usize % offsets.len()];
+                let b_addr = b.wrapping_add(u16::from(offset));
+
+                if channel.reverse() {
+                    let value = self.b_read(b_addr);
+                    self.a_write(address, value);
+                } else {
+                    let value = self.a_read(address);
+                    self.b_write(b_addr, value);
+                }
+
+                address = address.wrapping_add_signed(step);
+            }
+
+            channel.a1t = address as u16;
+            channel.a1b = (address >> 16) as u8;
+            channel.das = 0;
+            self.channels[index] = channel;
+            self.pending_cycles += 8 * u64::from(count) + 8;
+        }
+    }
+
+    /// Enable HDMA channels and reset their table cursors.
+    pub fn write_hdma_enable(&mut self, value: u8) {
+        self.hdma_enable = value;
+        for index in 0..8 {
+            if value & (1 << index) != 0 {
+                self.channels[index].reset_hdma();
+            }
+        }
+    }
+
+    /// Run one HDMA line for every enabled channel.
+    pub fn run_hdma_line(&mut self, _line: u16) {
+        let mut cycles = 0u64;
+
+        for index in 0..8 {
+            if self.hdma_enable & (1 << index) == 0 {
+                continue;
+            }
+
+            let mut channel = self.channels[index].clone();
+            if channel.finished {
+                continue;
+            }
+
+            if channel.remaining == 0 {
+                let address =
+                    (u32::from(channel.table_bank) << 16) | u32::from(channel.table_index);
+                let header = self.a_read(address);
+                channel.table_index = channel.table_index.wrapping_add(1);
+                cycles += 8;
+
+                if header == 0 {
+                    channel.finished = true;
+                    self.channels[index] = channel;
+                    continue;
+                }
+
+                channel.remaining = header & 0x7F;
+                channel.indirect = header & 0x80 != 0;
+                if channel.remaining == 0 {
+                    channel.remaining = 128;
+                }
+
+                if channel.indirect {
+                    let lo = self.a_read(
+                        (u32::from(channel.table_bank) << 16) | u32::from(channel.table_index),
+                    );
+                    let hi = self.a_read(
+                        (u32::from(channel.table_bank) << 16)
+                            | u32::from(channel.table_index.wrapping_add(1)),
+                    );
+                    let bank = self.a_read(
+                        (u32::from(channel.table_bank) << 16)
+                            | u32::from(channel.table_index.wrapping_add(2)),
+                    );
+                    channel.pointer = u16::from(lo) | (u16::from(hi) << 8);
+                    channel.pointer_bank = bank;
+                    channel.table_index = channel.table_index.wrapping_add(3);
+                    cycles += 24;
+                } else {
+                    channel.pointer = channel.table_index;
+                    channel.pointer_bank = channel.table_bank;
+                }
+            }
+
+            let b = b_address(&channel);
+            for offset in channel.b_offsets() {
+                let b_addr = b.wrapping_add(u16::from(*offset));
+                let source = (u32::from(channel.pointer_bank) << 16) | u32::from(channel.pointer);
+                let value = self.a_read(source);
+                self.b_write(b_addr, value);
+                channel.pointer = channel.pointer.wrapping_add(1);
+                cycles += 8;
+            }
+
+            if !channel.indirect {
+                channel.table_index = channel.pointer;
+            }
+            channel.remaining -= 1;
+            self.channels[index] = channel;
+        }
+
+        self.pending_cycles += cycles;
+    }
+
+    fn a_read(&mut self, address: u32) -> u8 {
+        self.read_mapped((address >> 16) as u8, address as u16)
+            .unwrap_or(self.open_bus)
+    }
+
+    fn a_write(&mut self, address: u32, value: u8) {
+        self.write_mapped((address >> 16) as u8, address as u16, value);
+    }
+
+    fn b_write(&mut self, address: u16, value: u8) {
+        if (0x2100..=0x213F).contains(&address) {
+            self.ppu.write_register(address, value);
+        }
+    }
+
+    fn b_read(&mut self, address: u16) -> u8 {
+        if (0x2100..=0x213F).contains(&address) {
+            self.ppu.read_register(address)
+        } else {
+            self.open_bus
+        }
     }
 
     /// Value most recently driven on the data bus.
@@ -99,6 +284,24 @@ impl Memory {
             return Some(self.ppu.read_register(addr));
         }
 
+        if matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
+            match addr {
+                0x4210 => {
+                    let flag = self.take_nmi_flag();
+                    return Some(u8::from(flag) << 7 | 0x02);
+                }
+                0x4211 => return Some(0),
+                0x4212 => {
+                    let vblank = self.ppu.in_vblank();
+                    return Some((u8::from(vblank) << 7) | 0x01);
+                }
+                0x4213 => return Some(self.open_bus),
+                0x4214..=0x4217 => return Some(0),
+                0x4218..=0x421F => return Some(0),
+                _ => {}
+            }
+        }
+
         if let Some(offset) = self.cartridge.sram_offset(bank, addr) {
             return Some(self.cartridge.sram()[offset]);
         }
@@ -129,6 +332,45 @@ impl Memory {
         if (0x2100..=0x213F).contains(&addr) && matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
             self.ppu.write_register(addr, value);
             return true;
+        }
+
+        if matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
+            match addr {
+                0x4200 => {
+                    self.nmitimen = value;
+                    return true;
+                }
+                0x420B => {
+                    self.start_dma(value);
+                    return true;
+                }
+                0x420C => {
+                    self.write_hdma_enable(value);
+                    return true;
+                }
+                0x420D => return true,
+                0x4300..=0x437F => {
+                    let index = usize::from((addr - 0x4300) / 0x10);
+                    let register = (addr - 0x4300) % 0x10;
+                    let channel = &mut self.channels[index];
+                    match register {
+                        0x0 => channel.dmap = value,
+                        0x1 => channel.bbad = value,
+                        0x2 => channel.a1t = (channel.a1t & 0xFF00) | u16::from(value),
+                        0x3 => channel.a1t = (channel.a1t & 0x00FF) | (u16::from(value) << 8),
+                        0x4 => channel.a1b = value,
+                        0x5 => channel.das = (channel.das & 0xFF00) | u16::from(value),
+                        0x6 => channel.das = (channel.das & 0x00FF) | (u16::from(value) << 8),
+                        0x7 => channel.dasb = value,
+                        0x8 => channel.a2a = (channel.a2a & 0xFF00) | u16::from(value),
+                        0x9 => channel.a2a = (channel.a2a & 0x00FF) | (u16::from(value) << 8),
+                        0xA => channel.a2b = value,
+                        _ => {}
+                    }
+                    return true;
+                }
+                _ => {}
+            }
         }
 
         if let Some(offset) = self.cartridge.sram_offset(bank, addr) {
@@ -232,6 +474,72 @@ mod tests {
         memory.write(0x7E, 0x1234, 0xAB);
         assert_eq!(memory.read(0x21, 0x2200), 0xAB);
         assert_eq!(memory.open_bus(), 0xAB);
+    }
+
+    #[test]
+    fn dma_copies_wram_to_vram() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+
+        memory.write(0x00, 0x2115, 0x80);
+        memory.write(0x00, 0x2116, 0x00);
+        memory.write(0x00, 0x2117, 0x00);
+
+        memory.write(0x7E, 0x1000, 0x12);
+        memory.write(0x7E, 0x1001, 0x34);
+
+        memory.write(0x00, 0x4300, 0x01);
+        memory.write(0x00, 0x4301, 0x18);
+        memory.write(0x00, 0x4302, 0x00);
+        memory.write(0x00, 0x4303, 0x10);
+        memory.write(0x00, 0x4304, 0x7E);
+        memory.write(0x00, 0x4305, 0x02);
+        memory.write(0x00, 0x4306, 0x00);
+
+        memory.write(0x00, 0x420B, 0x01);
+
+        assert_eq!(memory.ppu().vram()[0], 0x12);
+        assert_eq!(memory.ppu().vram()[1], 0x34);
+        assert!(memory.take_pending_cycles() > 0);
+    }
+
+    #[test]
+    fn hdma_writes_one_cgram_color_per_line() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+
+        memory.write(0x00, 0x2121, 0x00);
+
+        let table = [0x02, 0x1F, 0x00, 0xE0, 0x03, 0x00];
+        for (index, byte) in table.iter().enumerate() {
+            memory.write(0x7E, 0x0200 + index as u16, *byte);
+        }
+
+        memory.write(0x00, 0x4300, 0x02);
+        memory.write(0x00, 0x4301, 0x22);
+        memory.write(0x00, 0x4308, 0x00);
+        memory.write(0x00, 0x4309, 0x02);
+        memory.write(0x00, 0x430A, 0x7E);
+
+        memory.write(0x00, 0x420C, 0x01);
+
+        memory.run_hdma_line(0);
+        memory.run_hdma_line(1);
+        memory.run_hdma_line(2);
+
+        assert_eq!(memory.ppu().cgram()[0], 0x001F);
+        assert_eq!(memory.ppu().cgram()[1], 0x03E0);
+    }
+
+    #[test]
+    fn nmi_flag_follows_the_enable_bit() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+
+        assert!(!memory.nmi_enabled());
+        memory.write(0x00, 0x4200, 0x80);
+        assert!(memory.nmi_enabled());
+
+        memory.note_nmi();
+        assert!(memory.take_nmi_flag());
+        assert!(!memory.take_nmi_flag());
     }
 
     #[test]

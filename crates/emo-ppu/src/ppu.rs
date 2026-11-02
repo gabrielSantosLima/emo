@@ -202,6 +202,25 @@ impl Ppu {
         self.frame_ready
     }
 
+    /// Scanlines processed since reset.
+    #[must_use]
+    pub const fn line_counter(&self) -> u64 {
+        self.line_counter
+    }
+
+    /// Visible scanlines per frame.
+    #[must_use]
+    pub const fn visible_lines(&self) -> u16 {
+        self.timing.visible_lines
+    }
+
+    /// True while the beam is inside vertical blanking.
+    #[must_use]
+    pub fn in_vblank(&self) -> bool {
+        let line = (self.line_counter % u64::from(self.timing.lines_per_frame)) as u16;
+        line >= self.timing.vblank_line
+    }
+
     /// Clear the frame-complete flag after the frontend consumed the frame.
     pub fn clear_frame_ready(&mut self) {
         self.frame_ready = false;

@@ -105,6 +105,7 @@ pub struct Machine {
     frame_cycles: u64,
     clock: u64,
     frame: u64,
+    last_line: u64,
 }
 
 impl Machine {
@@ -124,6 +125,7 @@ impl Machine {
             frame_cycles,
             clock: 0,
             frame: 0,
+            last_line: 0,
         };
         machine.reset();
 
@@ -136,6 +138,7 @@ impl Machine {
         self.memory.ppu_mut().reset_timing();
         self.clock = 0;
         self.frame = 0;
+        self.last_line = 0;
     }
 
     /// CPU state.
@@ -186,6 +189,8 @@ impl Machine {
     pub fn run_frame(&mut self) -> FrameResult {
         loop {
             self.memory.ppu_mut().advance_to(self.clock);
+            self.run_hdma();
+
             if self.memory.ppu_mut().frame_ready() {
                 self.memory.ppu_mut().clear_frame_ready();
                 break;
@@ -202,9 +207,13 @@ impl Machine {
             } else {
                 elapsed * MASTER_CYCLES_PER_CPU_CYCLE
             };
+            self.clock += self.memory.take_pending_cycles();
 
             if self.memory.ppu_mut().take_nmi() {
-                self.cpu.set_nmi(true);
+                self.memory.note_nmi();
+                if self.memory.nmi_enabled() {
+                    self.cpu.set_nmi(true);
+                }
             }
         }
 
@@ -215,6 +224,23 @@ impl Machine {
             clock: self.clock,
             hash: self.state_hash(),
         }
+    }
+
+    /// Run HDMA for every scanline the PPU crossed since the last call.
+    fn run_hdma(&mut self) {
+        let line = self.memory.ppu().line_counter();
+        let lines = u64::from(self.memory.ppu().timing().lines_per_frame);
+        let visible = u64::from(self.memory.ppu().visible_lines());
+
+        while self.last_line < line {
+            self.last_line += 1;
+            let within = self.last_line % lines;
+            if within < visible {
+                self.memory.run_hdma_line(within as u16);
+            }
+        }
+
+        self.clock += self.memory.take_pending_cycles();
     }
 
     /// Fingerprint of the current machine state.
