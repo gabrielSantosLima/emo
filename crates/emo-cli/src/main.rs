@@ -46,6 +46,9 @@ enum Command {
         /// Write the final frame as a PPM image.
         #[arg(long)]
         dump_frame: Option<PathBuf>,
+        /// Print CPU and APU state after the run.
+        #[arg(long)]
+        debug: bool,
     },
     /// Print the decoded header of a cartridge image.
     Info {
@@ -90,6 +93,7 @@ fn main() -> ExitCode {
             sram,
             save_state,
             dump_frame,
+            debug,
         } => run(
             &rom,
             frames,
@@ -97,6 +101,7 @@ fn main() -> ExitCode {
             sram.as_ref(),
             save_state.as_ref(),
             dump_frame.as_ref(),
+            debug,
         ),
         Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
@@ -111,6 +116,7 @@ fn run(
     sram_path: Option<&PathBuf>,
     save_state_path: Option<&PathBuf>,
     dump_frame_path: Option<&PathBuf>,
+    debug: bool,
 ) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -174,6 +180,24 @@ fn run(
                 return ExitCode::FAILURE;
             }
         }
+    }
+
+    if debug {
+        let cpu = machine.cpu().registers();
+        let apu = machine.memory().apu();
+        println!(
+            "cpu pc={:#06x} pbr={:#04x} p={:#04x}  apu booting={} spc pc={:#06x} a={:#04x} x={:#04x} y={:#04x} psw={:#04x}",
+            cpu.pc,
+            cpu.pbr,
+            cpu.p,
+            apu.is_booting(),
+            apu.spc().pc,
+            apu.spc().a,
+            apu.spc().x,
+            apu.spc().y,
+            apu.spc().psw
+        );
+        println!("port writes: {:02x?}", apu.port_trace());
     }
 
     if let Some(dump_frame_path) = dump_frame_path {

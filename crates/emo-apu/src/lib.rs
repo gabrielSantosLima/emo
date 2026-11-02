@@ -8,10 +8,21 @@
 #![forbid(unsafe_code)]
 
 mod dsp;
+mod spc700;
 mod timers;
 
 pub use dsp::Dsp;
+pub use spc700::Spc700;
 pub use timers::Timer;
+
+/// Memory interface used by the SPC700.
+pub trait ApuBus {
+    /// Read one byte of the SPC700 address space.
+    fn read(&mut self, addr: u16) -> u8;
+
+    /// Write one byte of the SPC700 address space.
+    fn write(&mut self, addr: u16, value: u8);
+}
 
 /// APU oscillator clock in hertz.
 pub const APU_CLOCK: u64 = 1_024_000;
@@ -28,12 +39,22 @@ pub struct Apu {
     aram: Box<[u8]>,
     input: [u8; 4],
     output: [u8; 4],
+    spc: Spc700,
     dsp: Dsp,
     timers: [Timer; 3],
     cycles: u64,
     sample_accumulator: u32,
     #[serde(skip)]
     audio: Vec<i16>,
+
+    booting: bool,
+    boot_started: bool,
+    boot_address: u16,
+    boot_write_address: u16,
+    boot_expected: u8,
+    boot_pending: Option<u8>,
+    #[serde(skip)]
+    port_trace: Vec<(u8, u8)>,
 }
 
 impl Default for Apu {
@@ -50,12 +71,28 @@ impl Apu {
             aram: vec![0; ARAM_SIZE].into_boxed_slice(),
             input: [0; 4],
             output: [0; 4],
+            spc: Spc700::new(),
             dsp: Dsp::new(),
             timers: [Timer::new(128), Timer::new(128), Timer::new(16)],
             cycles: 0,
             sample_accumulator: 0,
             audio: Vec::new(),
+            booting: true,
+            boot_started: false,
+            boot_address: 0,
+            boot_write_address: 0,
+            boot_expected: 0,
+            boot_pending: None,
+            port_trace: Vec::new(),
         }
+        .with_boot_ready()
+    }
+
+    fn with_boot_ready(mut self) -> Self {
+        self.output[0] = 0xAA;
+        self.output[1] = 0xBB;
+        self.spc.stopped = true;
+        self
     }
 
     /// Return the APU to its power-on state.
@@ -63,11 +100,22 @@ impl Apu {
         self.aram.fill(0);
         self.input = [0; 4];
         self.output = [0; 4];
+        self.spc = Spc700::new();
         self.dsp = Dsp::new();
         self.timers = [Timer::new(128), Timer::new(128), Timer::new(16)];
         self.cycles = 0;
         self.sample_accumulator = 0;
         self.audio.clear();
+        self.booting = true;
+        self.boot_started = false;
+        self.boot_address = 0;
+        self.boot_write_address = 0;
+        self.boot_expected = 0;
+        self.boot_pending = None;
+        self.output = [0; 4];
+        self.output[0] = 0xAA;
+        self.output[1] = 0xBB;
+        self.spc.stopped = true;
     }
 
     /// Audio RAM.
@@ -87,6 +135,44 @@ impl Apu {
         &self.dsp
     }
 
+    /// SPC700 state.
+    #[must_use]
+    pub const fn spc(&self) -> &Spc700 {
+        &self.spc
+    }
+
+    /// Mutable SPC700 state, for boot and tests.
+    pub fn spc_mut(&mut self) -> &mut Spc700 {
+        &mut self.spc
+    }
+
+    fn spc_step(&mut self) -> u32 {
+        if self.booting && self.spc.stopped {
+            return 1;
+        }
+
+        let mut bus = SpcBus {
+            aram: &mut self.aram,
+            input: &self.input,
+            output: &mut self.output,
+            dsp: &mut self.dsp,
+            timers: &mut self.timers,
+        };
+        self.spc.step(&mut bus)
+    }
+
+    /// Recent CPU port writes, for debugging.
+    #[must_use]
+    pub fn port_trace(&self) -> &[(u8, u8)] {
+        &self.port_trace
+    }
+
+    /// True while the IPL boot protocol is still in control.
+    #[must_use]
+    pub const fn is_booting(&self) -> bool {
+        self.booting
+    }
+
     /// APU cycles elapsed since reset.
     #[must_use]
     pub const fn cycles(&self) -> u64 {
@@ -102,6 +188,75 @@ impl Apu {
     /// Main CPU writes one of `$2140-$2143`.
     pub fn cpu_write(&mut self, port: usize, value: u8) {
         self.input[port & 3] = value;
+        if self.port_trace.len() >= 64 {
+            self.port_trace.remove(0);
+        }
+        self.port_trace.push((port as u8, value));
+
+        match port & 3 {
+            2 => self.boot_address = (self.boot_address & 0xFF00) | u16::from(value),
+            3 => self.boot_address = (self.boot_address & 0x00FF) | (u16::from(value) << 8),
+            1 => self.boot_pending = Some(value),
+            0 => self.boot_command(value),
+            _ => {}
+        }
+    }
+
+    /// Clean-room high-level implementation of the IPL boot protocol.
+    fn boot_command(&mut self, value: u8) {
+        if !self.booting {
+            return;
+        }
+
+        if !self.boot_started {
+            if value != 0xCC {
+                return;
+            }
+            self.boot_started = true;
+            self.output[0] = value;
+
+            if self.boot_pending.unwrap_or(0) == 0 {
+                self.boot_jump(self.boot_address);
+            } else {
+                self.boot_write_address = self.boot_address;
+                self.boot_expected = 0;
+                self.boot_pending = None;
+            }
+            return;
+        }
+
+        self.output[0] = value;
+        let expected_next = self.boot_expected;
+        let ahead = value.wrapping_sub(expected_next);
+
+        if ahead == 0
+            && let Some(byte) = self.boot_pending.take()
+        {
+            let address = self.boot_write_address as usize;
+            self.aram[address % ARAM_SIZE] = byte;
+            self.boot_write_address = self.boot_write_address.wrapping_add(1);
+            self.boot_expected = self.boot_expected.wrapping_add(1);
+            return;
+        }
+
+        if ahead != 0 && ahead <= 127 {
+            if self.boot_pending.unwrap_or(0) == 0 {
+                self.boot_jump(self.boot_address);
+            } else {
+                self.boot_write_address = self.boot_address;
+                self.boot_expected = value.wrapping_add(1);
+                self.boot_pending = None;
+            }
+        }
+    }
+
+    fn boot_jump(&mut self, address: u16) {
+        self.aram[0] = address as u8;
+        self.aram[1] = (address >> 8) as u8;
+        self.output[0] = self.input[0];
+        self.output[1] = 0xBB;
+        self.booting = false;
+        self.spc.reset(address);
     }
 
     /// SPC700 read from its 64 KB address space.
@@ -144,28 +299,32 @@ impl Apu {
 
     /// Advance the APU by a number of main-CPU master cycles.
     pub fn advance(&mut self, master_cycles: u64) {
-        let apu_cycles = master_cycles * APU_CLOCK / MASTER_CLOCK;
-        self.cycles += apu_cycles;
+        let mut remaining = master_cycles * APU_CLOCK / MASTER_CLOCK;
 
-        for cycle in 0..apu_cycles {
-            for timer in &mut self.timers {
-                timer.tick();
+        while remaining > 0 {
+            let used = u64::from(self.spc_step()).max(1);
+            let step = used.min(remaining);
+            self.cycles += step;
+
+            for _ in 0..step {
+                for timer in &mut self.timers {
+                    timer.tick();
+                }
+
+                self.sample_accumulator += 1;
+                if self.sample_accumulator >= 32 {
+                    self.sample_accumulator = 0;
+                    let (left, right) = self.dsp.sample(&self.aram);
+                    self.audio.push(left);
+                    self.audio.push(right);
+                }
+
+                if self.audio.len() > 1_000_000 {
+                    self.audio.drain(..960_000);
+                }
             }
 
-            self.sample_accumulator += 1;
-            if self.sample_accumulator >= 32 {
-                self.sample_accumulator = 0;
-                let (left, right) = self.dsp.sample(&self.aram);
-                self.audio.push(left);
-                self.audio.push(right);
-            }
-
-            // Keep the buffer bounded when nobody drains it.
-            if self.audio.len() > 1_000_000 {
-                self.audio.drain(..960_000);
-            }
-
-            let _ = cycle;
+            remaining -= step;
         }
     }
 
@@ -178,6 +337,44 @@ impl Apu {
     /// Take the accumulated audio buffer.
     pub fn take_audio(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.audio)
+    }
+}
+
+struct SpcBus<'a> {
+    aram: &'a mut Box<[u8]>,
+    input: &'a [u8; 4],
+    output: &'a mut [u8; 4],
+    dsp: &'a mut Dsp,
+    timers: &'a mut [Timer; 3],
+}
+
+impl ApuBus for SpcBus<'_> {
+    fn read(&mut self, addr: u16) -> u8 {
+        match addr {
+            0x00F4..=0x00F7 => self.input[usize::from(addr - 0x00F4)],
+            0x00F2 => self.dsp.address(),
+            0x00F3 => self.dsp.read_data(self.aram),
+            0x00FD..=0x00FF => self.timers[usize::from(addr - 0x00FD)].output(),
+            _ => self.aram[usize::from(addr)],
+        }
+    }
+
+    fn write(&mut self, addr: u16, value: u8) {
+        match addr {
+            0x00F4..=0x00F7 => self.output[usize::from(addr - 0x00F4)] = value,
+            0x00F2 => self.dsp.set_address(value),
+            0x00F3 => self.dsp.write_data(self.aram, value),
+            0x00FA..=0x00FC => {
+                let index = usize::from(addr - 0x00FA);
+                self.timers[index].set_target(value);
+            }
+            0x00F1 => {
+                self.timers[0].set_enabled(value & 0x01 != 0);
+                self.timers[1].set_enabled(value & 0x02 != 0);
+                self.timers[2].set_enabled(value & 0x04 != 0);
+            }
+            _ => self.aram[usize::from(addr)] = value,
+        }
     }
 }
 
@@ -215,6 +412,89 @@ mod tests {
         apu.advance(100_000);
 
         assert!(apu.cycles() >= 1_000);
+    }
+
+    #[test]
+    fn ipl_protocol_uploads_a_block_and_jumps() {
+        let mut apu = Apu::new();
+
+        assert_eq!(apu.cpu_read(0), 0xAA);
+        assert_eq!(apu.cpu_read(1), 0xBB);
+
+        // Command: write block at $0200.
+        apu.cpu_write(2, 0x00);
+        apu.cpu_write(3, 0x02);
+        apu.cpu_write(1, 0x01);
+        apu.cpu_write(0, 0xCC);
+        assert_eq!(apu.cpu_read(0), 0xCC);
+
+        // Two bytes with echoed counters.
+        apu.cpu_write(1, 0xE8);
+        apu.cpu_write(0, 0x00);
+        assert_eq!(apu.cpu_read(0), 0x00);
+        apu.cpu_write(1, 0x42);
+        apu.cpu_write(0, 0x01);
+        assert_eq!(apu.cpu_read(0), 0x01);
+
+        assert_eq!(apu.aram()[0x0200], 0xE8);
+        assert_eq!(apu.aram()[0x0201], 0x42);
+
+        // Jump command: last counter + 2.
+        apu.cpu_write(2, 0x00);
+        apu.cpu_write(3, 0x02);
+        apu.cpu_write(1, 0x00);
+        apu.cpu_write(0, 0x03);
+
+        assert_eq!(apu.spc().pc, 0x0200);
+        assert_eq!(apu.aram()[0], 0x00);
+        assert_eq!(apu.aram()[1], 0x02);
+    }
+
+    #[test]
+    fn ipl_can_jump_immediately() {
+        let mut apu = Apu::new();
+
+        apu.cpu_write(2, 0x00);
+        apu.cpu_write(3, 0x04);
+        apu.cpu_write(1, 0x00);
+        apu.cpu_write(0, 0xCC);
+
+        assert_eq!(apu.spc().pc, 0x0400);
+    }
+
+    #[test]
+    fn spc700_runs_a_small_program() {
+        let mut apu = Apu::new();
+
+        // MOV A,#$42 ; MOV $10,A ; BRA -3
+        let program = [0xE8, 0x42, 0xC4, 0x10, 0x2F, 0xFE];
+        for (index, byte) in program.iter().enumerate() {
+            apu.spc_write(0x0200 + index as u16, *byte);
+        }
+        apu.spc_mut().reset(0x0200);
+
+        apu.spc_step();
+        apu.spc_step();
+
+        assert_eq!(apu.aram()[0x10], 0x42);
+    }
+
+    #[test]
+    fn spc700_arithmetic_sets_flags() {
+        let mut apu = Apu::new();
+
+        // MOV A,#$40 ; ADC A,#$40
+        let program = [0xE8, 0x40, 0x88, 0x40];
+        for (index, byte) in program.iter().enumerate() {
+            apu.spc_write(0x0200 + index as u16, *byte);
+        }
+        apu.spc_mut().reset(0x0200);
+
+        apu.spc_step();
+        apu.spc_step();
+
+        assert_eq!(apu.spc().a, 0x80);
+        assert!(apu.spc().psw & 0x40 != 0, "overflow should be set");
     }
 
     #[test]
