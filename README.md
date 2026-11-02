@@ -53,6 +53,7 @@ blanking and prints the master clock plus a state hash per frame. Useful flags:
 - `--frames N` - number of frames to execute (default 60).
 - `--sram PATH` - load and save battery-backed SRAM at that path.
 - `--save-state PATH` - write the final machine state (versioned, bincode).
+- `--dump-frame PATH` - write the final frame as a PPM (P6) image.
 
 ## CPU vectors
 
@@ -71,6 +72,7 @@ compares registers, RAM and the exact bus cycle count.
 | Path | Contents |
 | --- | --- |
 | `crates/emo-core` | Timing, address space, cartridge mapping and the machine scheduler |
+| `crates/emo-ppu` | Scanline PPU: registers, VRAM/CGRAM/OAM, backgrounds and sprites |
 | `crates/emo-cpu` | 65C816 core: decoder, addressing modes, cycle accounting |
 | `crates/emo-cli` | The `emo` binary: timing report and instruction vector runner |
 | `docs/theory/` | Static theory guide on how the SNES works |

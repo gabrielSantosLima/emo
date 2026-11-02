@@ -6,7 +6,9 @@
 //! milestones; today they read as open bus.
 
 use emo_cpu::Bus;
+use emo_ppu::{Ppu, Timing};
 
+use crate::VideoStandard;
 use crate::cartridge::Cartridge;
 
 /// Work RAM size in bytes.
@@ -20,18 +22,36 @@ const WRAM_MIRROR: usize = 8 * 1024;
 pub struct Memory {
     wram: Box<[u8]>,
     cartridge: Cartridge,
+    ppu: Ppu,
     open_bus: u8,
 }
 
 impl Memory {
     /// Build the address space around a cartridge.
     #[must_use]
-    pub fn new(cartridge: Cartridge) -> Self {
+    pub fn new(cartridge: Cartridge, standard: VideoStandard) -> Self {
+        let timing = match standard {
+            VideoStandard::Ntsc => Timing::ntsc(),
+            VideoStandard::Pal => Timing::pal(),
+        };
+
         Self {
             wram: vec![0; WRAM_SIZE].into_boxed_slice(),
             cartridge,
+            ppu: Ppu::new(timing),
             open_bus: 0,
         }
+    }
+
+    /// Video chip.
+    #[must_use]
+    pub const fn ppu(&self) -> &Ppu {
+        &self.ppu
+    }
+
+    /// Mutable video chip.
+    pub fn ppu_mut(&mut self) -> &mut Ppu {
+        &mut self.ppu
     }
 
     /// Value most recently driven on the data bus.
@@ -62,7 +82,7 @@ impl Memory {
         &mut self.cartridge
     }
 
-    fn read_mapped(&self, bank: u8, addr: u16) -> Option<u8> {
+    fn read_mapped(&mut self, bank: u8, addr: u16) -> Option<u8> {
         if bank == 0x7E || bank == 0x7F {
             let offset = usize::from(bank - 0x7E) * 0x1_0000 + usize::from(addr);
             return Some(self.wram[offset]);
@@ -73,6 +93,10 @@ impl Memory {
             if in_system {
                 return Some(self.wram[usize::from(addr) % WRAM_MIRROR]);
             }
+        }
+
+        if (0x2100..=0x213F).contains(&addr) && matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
+            return Some(self.ppu.read_register(addr));
         }
 
         if let Some(offset) = self.cartridge.sram_offset(bank, addr) {
@@ -100,6 +124,11 @@ impl Memory {
                 self.wram[offset] = value;
                 return true;
             }
+        }
+
+        if (0x2100..=0x213F).contains(&addr) && matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
+            self.ppu.write_register(addr, value);
+            return true;
         }
 
         if let Some(offset) = self.cartridge.sram_offset(bank, addr) {
@@ -163,7 +192,7 @@ mod tests {
 
     #[test]
     fn wram_is_mirrored_in_the_system_banks() {
-        let mut memory = Memory::new(cartridge(Mapping::LoRom));
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
 
         memory.write(0x00, 0x0010, 0x42);
         assert_eq!(memory.read(0x01, 0x0010), 0x42);
@@ -176,7 +205,7 @@ mod tests {
 
     #[test]
     fn rom_window_returns_cartridge_bytes() {
-        let mut memory = Memory::new(cartridge(Mapping::LoRom));
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
 
         assert_eq!(memory.read(0x00, 0xFFC0), b'T');
         assert_eq!(memory.read(0x00, 0xFFC1), b'E');
@@ -185,7 +214,7 @@ mod tests {
 
     #[test]
     fn sram_window_is_writable_and_survives_reads() {
-        let mut memory = Memory::new(cartridge(Mapping::LoRom));
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
 
         memory.write(0x70, 0x0000, 0x5A);
         assert_eq!(memory.read(0x70, 0x0000), 0x5A);
@@ -198,16 +227,16 @@ mod tests {
 
     #[test]
     fn unmapped_reads_return_the_last_bus_value() {
-        let mut memory = Memory::new(cartridge(Mapping::LoRom));
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
 
         memory.write(0x7E, 0x1234, 0xAB);
-        assert_eq!(memory.read(0x21, 0x2100), 0xAB);
+        assert_eq!(memory.read(0x21, 0x2200), 0xAB);
         assert_eq!(memory.open_bus(), 0xAB);
     }
 
     #[test]
     fn rom_writes_are_ignored_but_drive_the_bus() {
-        let mut memory = Memory::new(cartridge(Mapping::LoRom));
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
         let before = memory.cartridge().rom()[0];
 
         memory.write(0x00, 0x8000, 0x7F);

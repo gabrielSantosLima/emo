@@ -11,18 +11,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::cartridge::{Cartridge, Coprocessor};
 use crate::memory::Memory;
-use crate::timing::{MASTER_CYCLES_PER_LINE, VideoStandard};
+use crate::timing::VideoStandard;
 
 /// Master cycles in one CPU machine cycle.
 ///
 /// The S-CPU runs at `master / 6`. Slow regions add wait states on top; those
 /// are a bus concern and land with the PPU/APU register windows.
 pub const MASTER_CYCLES_PER_CPU_CYCLE: u64 = 6;
-
-/// First vertical-blanking scanline on NTSC.
-const NTSC_VBLANK_LINE: u64 = 225;
-/// First vertical-blanking scanline on PAL.
-const PAL_VBLANK_LINE: u64 = 240;
 
 /// Version written into serialized save states.
 const STATE_VERSION: u32 = 1;
@@ -95,8 +90,8 @@ struct StateBlob {
     version: u32,
     clock: u64,
     frame: u64,
-    nmi_sent: bool,
     cpu: Cpu,
+    ppu: emo_ppu::Ppu,
     wram: Vec<u8>,
     sram: Vec<u8>,
 }
@@ -108,10 +103,8 @@ pub struct Machine {
     memory: Memory,
     standard: VideoStandard,
     frame_cycles: u64,
-    vblank_offset: u64,
     clock: u64,
     frame: u64,
-    nmi_sent: bool,
 }
 
 impl Machine {
@@ -123,20 +116,14 @@ impl Machine {
 
         let standard = cartridge.info().video_standard;
         let frame_cycles = standard.master_cycles_per_frame();
-        let vblank_line = match standard {
-            VideoStandard::Ntsc => NTSC_VBLANK_LINE,
-            VideoStandard::Pal => PAL_VBLANK_LINE,
-        };
 
         let mut machine = Self {
             cpu: Cpu::new(),
-            memory: Memory::new(cartridge),
+            memory: Memory::new(cartridge, standard),
             standard,
             frame_cycles,
-            vblank_offset: vblank_line * MASTER_CYCLES_PER_LINE,
             clock: 0,
             frame: 0,
-            nmi_sent: false,
         };
         machine.reset();
 
@@ -146,9 +133,9 @@ impl Machine {
     /// Reset the CPU and the frame clock, keeping the cartridge and save RAM.
     pub fn reset(&mut self) {
         self.cpu.reset(&mut self.memory);
+        self.memory.ppu_mut().reset_timing();
         self.clock = 0;
         self.frame = 0;
-        self.nmi_sent = false;
     }
 
     /// CPU state.
@@ -197,13 +184,11 @@ impl Machine {
     /// The NMI line is pulsed at the start of vertical blanking, exactly where
     /// games expect to run their per-frame logic.
     pub fn run_frame(&mut self) -> FrameResult {
-        let end = (self.frame + 1) * self.frame_cycles;
-        let vblank = self.frame * self.frame_cycles + self.vblank_offset;
-
-        while self.clock < end {
-            if !self.nmi_sent && self.clock >= vblank {
-                self.cpu.set_nmi(true);
-                self.nmi_sent = true;
+        loop {
+            self.memory.ppu_mut().advance_to(self.clock);
+            if self.memory.ppu_mut().frame_ready() {
+                self.memory.ppu_mut().clear_frame_ready();
+                break;
             }
 
             let before = self.cpu.cycles();
@@ -217,15 +202,13 @@ impl Machine {
             } else {
                 elapsed * MASTER_CYCLES_PER_CPU_CYCLE
             };
-        }
 
-        if !self.nmi_sent && self.clock >= vblank {
-            self.cpu.set_nmi(true);
-            self.nmi_sent = true;
+            if self.memory.ppu_mut().take_nmi() {
+                self.cpu.set_nmi(true);
+            }
         }
 
         self.frame += 1;
-        self.nmi_sent = false;
 
         FrameResult {
             frame: self.frame - 1,
@@ -284,8 +267,8 @@ impl Machine {
             version: STATE_VERSION,
             clock: self.clock,
             frame: self.frame,
-            nmi_sent: self.nmi_sent,
             cpu: self.cpu.clone(),
+            ppu: self.memory.ppu().clone(),
             wram: self.memory.wram().to_vec(),
             sram: self.memory.cartridge().sram().to_vec(),
         };
@@ -310,7 +293,7 @@ impl Machine {
         self.cpu = blob.cpu;
         self.clock = blob.clock;
         self.frame = blob.frame;
-        self.nmi_sent = blob.nmi_sent;
+        *self.memory.ppu_mut() = blob.ppu;
         self.memory.wram_mut().copy_from_slice(&blob.wram);
         self.memory.cartridge_mut().load_sram(&blob.sram);
 

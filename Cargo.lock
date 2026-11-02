@@ -135,11 +135,19 @@ version = "0.0.0"
 dependencies = [
  "bincode",
  "emo-cpu",
+ "emo-ppu",
  "serde",
 ]
 
 [[package]]
 name = "emo-cpu"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "emo-ppu"
 version = "0.0.0"
 dependencies = [
  "serde",

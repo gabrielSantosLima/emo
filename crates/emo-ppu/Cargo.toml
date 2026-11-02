@@ -1,0 +1,15 @@
+[package]
+name = "emo-ppu"
+description = "S-PPU video chip for emo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

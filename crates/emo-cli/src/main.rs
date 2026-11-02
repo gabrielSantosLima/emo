@@ -43,6 +43,9 @@ enum Command {
         /// Write the final save state to this path.
         #[arg(long)]
         save_state: Option<PathBuf>,
+        /// Write the final frame as a PPM image.
+        #[arg(long)]
+        dump_frame: Option<PathBuf>,
     },
     /// Print the decoded header of a cartridge image.
     Info {
@@ -86,7 +89,15 @@ fn main() -> ExitCode {
             hash,
             sram,
             save_state,
-        } => run(&rom, frames, hash, sram.as_ref(), save_state.as_ref()),
+            dump_frame,
+        } => run(
+            &rom,
+            frames,
+            hash,
+            sram.as_ref(),
+            save_state.as_ref(),
+            dump_frame.as_ref(),
+        ),
         Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
     }
@@ -99,6 +110,7 @@ fn run(
     hash: bool,
     sram_path: Option<&PathBuf>,
     save_state_path: Option<&PathBuf>,
+    dump_frame_path: Option<&PathBuf>,
 ) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -161,6 +173,24 @@ fn run(
                 eprintln!("{error}");
                 return ExitCode::FAILURE;
             }
+        }
+    }
+
+    if let Some(dump_frame_path) = dump_frame_path {
+        let ppu = machine.memory().ppu();
+        let height = usize::from(ppu.timing().visible_lines);
+        let mut image = format!(
+            "P6
+256 {height}
+255
+"
+        )
+        .into_bytes();
+        image.extend_from_slice(ppu.framebuffer());
+
+        if let Err(error) = std::fs::write(dump_frame_path, image) {
+            eprintln!("failed to write {}: {error}", dump_frame_path.display());
+            return ExitCode::FAILURE;
         }
     }
 
