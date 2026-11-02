@@ -527,8 +527,8 @@ impl Spc700 {
                 6
             } // OR A, [d]+Y
             0x18 => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 let left = self.read(bus, addr);
                 if let Some(result) = self.alu(Alu::Or, left, value) {
                     self.write(bus, addr, result);
@@ -756,8 +756,8 @@ impl Spc700 {
                 6
             } // AND A, [d]+Y
             0x38 => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 let left = self.read(bus, addr);
                 if let Some(result) = self.alu(Alu::And, left, value) {
                     self.write(bus, addr, result);
@@ -994,8 +994,8 @@ impl Spc700 {
                 6
             } // EOR A, [d]+Y
             0x58 => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 let left = self.read(bus, addr);
                 if let Some(result) = self.alu(Alu::Eor, left, value) {
                     self.write(bus, addr, result);
@@ -1227,8 +1227,8 @@ impl Spc700 {
                 6
             } // CMP A, [d]+Y
             0x78 => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 let left = self.read(bus, addr);
                 if let Some(result) = self.alu(Alu::Cmp, left, value) {
                     self.write(bus, addr, result);
@@ -1399,8 +1399,8 @@ impl Spc700 {
                 4
             } // POP PSW
             0x8F => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 self.write(bus, addr, value);
                 5
             } // MOV d, #i
@@ -1466,8 +1466,8 @@ impl Spc700 {
                 6
             } // ADC A, [d]+Y
             0x98 => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 let left = self.read(bus, addr);
                 if let Some(result) = self.alu(Alu::Adc, left, value) {
                     self.write(bus, addr, result);
@@ -1712,8 +1712,8 @@ impl Spc700 {
                 6
             } // SBC A, [d]+Y
             0xB8 => {
-                let addr = self.addr_dp(bus);
                 let value = self.imm(bus);
+                let addr = self.addr_dp(bus);
                 let left = self.read(bus, addr);
                 if let Some(result) = self.alu(Alu::Sbc, left, value) {
                     self.write(bus, addr, result);
