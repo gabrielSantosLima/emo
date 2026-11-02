@@ -40,6 +40,17 @@ impl Memory {
         self.open_bus
     }
 
+    /// Work RAM contents.
+    #[must_use]
+    pub fn wram(&self) -> &[u8] {
+        &self.wram
+    }
+
+    /// Mutable work RAM, for save states and debugging.
+    pub fn wram_mut(&mut self) -> &mut [u8] {
+        &mut self.wram
+    }
+
     /// Cartridge currently inserted.
     #[must_use]
     pub const fn cartridge(&self) -> &Cartridge {

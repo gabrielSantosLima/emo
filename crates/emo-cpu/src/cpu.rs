@@ -9,6 +9,8 @@
 //! behavior is validated against the `SingleStepTests/65816` vectors. See
 //! `docs/theory/` (section 05) for the architectural background.
 
+use serde::{Deserialize, Serialize};
+
 use crate::bus::Bus;
 
 /// Carry flag.
@@ -82,7 +84,7 @@ impl Effective {
 }
 
 /// The 65C816 processor.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cpu {
     a: u16,
     x: u16,

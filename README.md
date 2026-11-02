@@ -41,6 +41,19 @@ Prints the decoded header: title, mapping, ROM/SRAM sizes, region, checksum,
 version and coprocessor. Cartridges with an unimplemented coprocessor are
 reported instead of silently misbehaving.
 
+## Running headlessly
+
+```bash
+cargo run -p emo-cli -- run path/to/game.sfc --frames 60 --hash
+```
+
+Runs the cartridge without a display, pulses NMI at the start of vertical
+blanking and prints the master clock plus a state hash per frame. Useful flags:
+
+- `--frames N` - number of frames to execute (default 60).
+- `--sram PATH` - load and save battery-backed SRAM at that path.
+- `--save-state PATH` - write the final machine state (versioned, bincode).
+
 ## CPU vectors
 
 The CPU core is validated against the `SingleStepTests/65816` vectors. Download
@@ -57,7 +70,7 @@ compares registers, RAM and the exact bus cycle count.
 
 | Path | Contents |
 | --- | --- |
-| `crates/emo-core` | Timing, address space and cartridge mapping |
+| `crates/emo-core` | Timing, address space, cartridge mapping and the machine scheduler |
 | `crates/emo-cpu` | 65C816 core: decoder, addressing modes, cycle accounting |
 | `crates/emo-cli` | The `emo` binary: timing report and instruction vector runner |
 | `docs/theory/` | Static theory guide on how the SNES works |

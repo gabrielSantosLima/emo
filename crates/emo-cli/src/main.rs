@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use emo_core::{Cartridge, VideoStandard};
+use emo_core::{Cartridge, Machine, VideoStandard};
 
 mod vectors;
 
@@ -26,6 +26,23 @@ enum Command {
         /// Video standard to describe.
         #[arg(value_enum, default_value_t = StandardArg::Ntsc)]
         standard: StandardArg,
+    },
+    /// Run a cartridge headlessly and print a per-frame report.
+    Run {
+        /// ROM image to run.
+        rom: PathBuf,
+        /// Number of frames to execute.
+        #[arg(long, default_value_t = 60)]
+        frames: u64,
+        /// Print a hash line for every frame.
+        #[arg(long)]
+        hash: bool,
+        /// Load and save battery-backed SRAM at this path.
+        #[arg(long)]
+        sram: Option<PathBuf>,
+        /// Write the final save state to this path.
+        #[arg(long)]
+        save_state: Option<PathBuf>,
     },
     /// Print the decoded header of a cartridge image.
     Info {
@@ -63,9 +80,98 @@ fn main() -> ExitCode {
             print!("{}", timing_report(standard.into()));
             ExitCode::SUCCESS
         }
+        Command::Run {
+            rom,
+            frames,
+            hash,
+            sram,
+            save_state,
+        } => run(&rom, frames, hash, sram.as_ref(), save_state.as_ref()),
         Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
     }
+}
+
+/// Run a cartridge for a fixed number of frames.
+fn run(
+    path: &PathBuf,
+    frames: u64,
+    hash: bool,
+    sram_path: Option<&PathBuf>,
+    save_state_path: Option<&PathBuf>,
+) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("failed to read {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut cartridge = match Cartridge::from_rom(bytes) {
+        Ok(cartridge) => cartridge,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(sram_path) = sram_path
+        && let Ok(data) = std::fs::read(sram_path)
+    {
+        cartridge.load_sram(&data);
+    }
+
+    let mut machine = match Machine::new(cartridge) {
+        Ok(machine) => machine,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut last_hash = 0;
+    for _ in 0..frames {
+        let result = machine.run_frame();
+        last_hash = result.hash;
+        if hash {
+            println!(
+                "frame {:6}  clock {:10}  hash {:016x}",
+                result.frame, result.clock, result.hash
+            );
+        }
+    }
+
+    println!(
+        "ran {} frame(s)  clock {}  hash {:016x}",
+        machine.frame_count(),
+        machine.clock(),
+        last_hash
+    );
+
+    if let Some(save_state_path) = save_state_path {
+        match machine.save_state() {
+            Ok(state) => {
+                if let Err(error) = std::fs::write(save_state_path, state) {
+                    eprintln!("failed to write {}: {error}", save_state_path.display());
+                    return ExitCode::FAILURE;
+                }
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if let Some(sram_path) = sram_path
+        && let Err(error) = std::fs::write(sram_path, machine.memory().cartridge().sram())
+    {
+        eprintln!("failed to write {}: {error}", sram_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
 }
 
 /// Print the cartridge header of `path`.
