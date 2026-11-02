@@ -283,6 +283,12 @@ impl Memory {
         &mut self.cartridge
     }
 
+    /// Read without touching the open-bus latch, or `None` when unmapped.
+    #[must_use]
+    pub fn peek(&mut self, bank: u8, addr: u16) -> Option<u8> {
+        self.read_mapped(bank, addr)
+    }
+
     fn read_mapped(&mut self, bank: u8, addr: u16) -> Option<u8> {
         if bank == 0x7E || bank == 0x7F {
             let offset = usize::from(bank - 0x7E) * 0x1_0000 + usize::from(addr);

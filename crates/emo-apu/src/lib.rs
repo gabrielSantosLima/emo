@@ -55,6 +55,39 @@ pub struct Apu {
     boot_pending: Option<u8>,
     #[serde(skip)]
     port_trace: Vec<(u8, u8)>,
+    #[serde(skip)]
+    cpu_port_writes: Vec<(u64, u8, u8)>,
+    #[serde(skip)]
+    spc_port_reads: Vec<(u64, u16, u16, u8)>,
+    #[serde(skip)]
+    boot_log: Vec<(u16, bool)>,
+    #[serde(skip)]
+    boot_writes: Vec<(u8, u8)>,
+    #[serde(skip)]
+    trace: std::collections::VecDeque<SpcTrace>,
+    #[serde(skip)]
+    trace_limit: usize,
+}
+
+/// One executed SPC700 instruction, for debugging.
+#[derive(Clone, Copy, Debug)]
+pub struct SpcTrace {
+    /// Program counter before the instruction.
+    pub pc: u16,
+    /// Opcode byte.
+    pub opcode: u8,
+    /// Accumulator after the instruction.
+    pub a: u8,
+    /// X after the instruction.
+    pub x: u8,
+    /// Y after the instruction.
+    pub y: u8,
+    /// PSW after the instruction.
+    pub psw: u8,
+    /// Stack pointer after the instruction.
+    pub sp: u8,
+    /// Program counter after the instruction.
+    pub next_pc: u16,
 }
 
 impl Default for Apu {
@@ -84,6 +117,12 @@ impl Apu {
             boot_expected: 0,
             boot_pending: None,
             port_trace: Vec::new(),
+            cpu_port_writes: Vec::new(),
+            spc_port_reads: Vec::new(),
+            boot_log: Vec::new(),
+            boot_writes: Vec::new(),
+            trace: std::collections::VecDeque::new(),
+            trace_limit: 0,
         }
         .with_boot_ready()
     }
@@ -151,6 +190,17 @@ impl Apu {
             return 1;
         }
 
+        let pc = self.spc.pc;
+        let opcode = self.aram[usize::from(pc)];
+        if opcode == 0xE5 {
+            let operand = self.aram[usize::from(pc.wrapping_add(1))];
+            if operand == 0x00F5 && self.spc_port_reads.len() < 4096 {
+                let value = self.input[1];
+                self.spc_port_reads
+                    .push((self.cycles, pc, u16::from(operand), value));
+            }
+        }
+
         let mut bus = SpcBus {
             aram: &mut self.aram,
             input: &self.input,
@@ -158,7 +208,64 @@ impl Apu {
             dsp: &mut self.dsp,
             timers: &mut self.timers,
         };
-        self.spc.step(&mut bus)
+        let cycles = self.spc.step(&mut bus);
+
+        if self.trace_limit > 0 {
+            self.trace.push_back(SpcTrace {
+                pc,
+                opcode,
+                a: self.spc.a,
+                x: self.spc.x,
+                y: self.spc.y,
+                psw: self.spc.psw,
+                sp: self.spc.sp,
+                next_pc: self.spc.pc,
+            });
+            while self.trace.len() > self.trace_limit {
+                self.trace.pop_front();
+            }
+            if !self.booting && self.spc.pc < 0x0200 {
+                self.trace_limit = 0;
+            }
+        }
+
+        cycles
+    }
+
+    /// CPU port writes with their APU cycle stamps.
+    #[must_use]
+    pub fn cpu_port_writes(&self) -> &[(u64, u8, u8)] {
+        &self.cpu_port_writes
+    }
+
+    /// SPC reads of the port registers with their APU cycle stamps.
+    #[must_use]
+    pub fn spc_port_reads(&self) -> &[(u64, u16, u16, u8)] {
+        &self.spc_port_reads
+    }
+
+    /// Every CPU port write while the IPL is in control.
+    #[must_use]
+    pub fn boot_writes(&self) -> &[(u8, u8)] {
+        &self.boot_writes
+    }
+
+    /// Block commands seen by the IPL: address and whether it was a jump.
+    #[must_use]
+    pub fn boot_log(&self) -> &[(u16, bool)] {
+        &self.boot_log
+    }
+
+    /// Enable an instruction trace after the IPL hands control over.
+    pub fn set_spc_trace(&mut self, limit: usize) {
+        self.trace_limit = limit;
+        self.trace.clear();
+    }
+
+    /// Recorded SPC700 instructions.
+    #[must_use]
+    pub fn spc_trace(&self) -> Vec<SpcTrace> {
+        self.trace.iter().copied().collect()
     }
 
     /// Recent CPU port writes, for debugging.
@@ -188,6 +295,12 @@ impl Apu {
     /// Main CPU writes one of `$2140-$2143`.
     pub fn cpu_write(&mut self, port: usize, value: u8) {
         self.input[port & 3] = value;
+        if !self.booting && self.cpu_port_writes.len() < 4096 {
+            self.cpu_port_writes.push((self.cycles, port as u8, value));
+        }
+        if self.booting && self.boot_writes.len() < 200_000 {
+            self.boot_writes.push((port as u8, value));
+        }
         if self.port_trace.len() >= 64 {
             self.port_trace.remove(0);
         }
@@ -218,8 +331,11 @@ impl Apu {
             if self.boot_pending.unwrap_or(0) == 0 {
                 self.boot_jump(self.boot_address);
             } else {
+                if self.boot_log.len() < 128 {
+                    self.boot_log.push((self.boot_address, false));
+                }
                 self.boot_write_address = self.boot_address;
-                self.boot_expected = 0;
+                self.boot_expected = 1;
                 self.boot_pending = None;
             }
             return;
@@ -243,14 +359,20 @@ impl Apu {
             if self.boot_pending.unwrap_or(0) == 0 {
                 self.boot_jump(self.boot_address);
             } else {
+                if self.boot_log.len() < 128 {
+                    self.boot_log.push((self.boot_address, false));
+                }
                 self.boot_write_address = self.boot_address;
-                self.boot_expected = value.wrapping_add(1);
+                self.boot_expected = 1;
                 self.boot_pending = None;
             }
         }
     }
 
     fn boot_jump(&mut self, address: u16) {
+        if self.boot_log.len() < 128 {
+            self.boot_log.push((address, true));
+        }
         self.aram[0] = address as u8;
         self.aram[1] = (address >> 8) as u8;
         self.output[0] = self.input[0];
@@ -428,13 +550,14 @@ mod tests {
         apu.cpu_write(0, 0xCC);
         assert_eq!(apu.cpu_read(0), 0xCC);
 
-        // Two bytes with echoed counters.
-        apu.cpu_write(1, 0xE8);
+        // A sync counter, then two bytes with echoed counters 1 and 2.
         apu.cpu_write(0, 0x00);
-        assert_eq!(apu.cpu_read(0), 0x00);
-        apu.cpu_write(1, 0x42);
+        apu.cpu_write(1, 0xE8);
         apu.cpu_write(0, 0x01);
         assert_eq!(apu.cpu_read(0), 0x01);
+        apu.cpu_write(1, 0x42);
+        apu.cpu_write(0, 0x02);
+        assert_eq!(apu.cpu_read(0), 0x02);
 
         assert_eq!(apu.aram()[0x0200], 0xE8);
         assert_eq!(apu.aram()[0x0201], 0x42);
@@ -443,7 +566,7 @@ mod tests {
         apu.cpu_write(2, 0x00);
         apu.cpu_write(3, 0x02);
         apu.cpu_write(1, 0x00);
-        apu.cpu_write(0, 0x03);
+        apu.cpu_write(0, 0x04);
 
         assert_eq!(apu.spc().pc, 0x0200);
         assert_eq!(apu.aram()[0], 0x00);

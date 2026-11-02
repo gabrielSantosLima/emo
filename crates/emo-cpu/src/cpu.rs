@@ -2128,12 +2128,12 @@ impl Cpu {
         }
         let p = self.p();
         let pc = self.pc;
-        self.push_interrupt(bus, (pc >> 8) as u8);
-        self.push_interrupt(bus, pc as u8);
         if !self.e {
             let bank = self.pbr;
             self.push_interrupt(bus, bank);
         }
+        self.push_interrupt(bus, (pc >> 8) as u8);
+        self.push_interrupt(bus, pc as u8);
         let pushed = if software { p } else { p & !0x10 };
         self.push_interrupt(bus, pushed);
         self.set_flag(FLAG_I, true);

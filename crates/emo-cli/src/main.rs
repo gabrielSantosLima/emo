@@ -49,6 +49,12 @@ enum Command {
         /// Print CPU and APU state after the run.
         #[arg(long)]
         debug: bool,
+        /// Record this many SPC700 instructions after boot.
+        #[arg(long, default_value_t = 0)]
+        spc_trace: usize,
+        /// Record the last N main-CPU instructions.
+        #[arg(long, default_value_t = 0)]
+        cpu_trace: usize,
     },
     /// Print the decoded header of a cartridge image.
     Info {
@@ -94,6 +100,8 @@ fn main() -> ExitCode {
             save_state,
             dump_frame,
             debug,
+            spc_trace,
+            cpu_trace,
         } => run(
             &rom,
             frames,
@@ -102,6 +110,8 @@ fn main() -> ExitCode {
             save_state.as_ref(),
             dump_frame.as_ref(),
             debug,
+            spc_trace,
+            cpu_trace,
         ),
         Command::Info { rom } => info(&rom),
         Command::Verify { path } => verify(&path),
@@ -109,6 +119,7 @@ fn main() -> ExitCode {
 }
 
 /// Run a cartridge for a fixed number of frames.
+#[allow(clippy::too_many_arguments)]
 fn run(
     path: &PathBuf,
     frames: u64,
@@ -117,6 +128,8 @@ fn run(
     save_state_path: Option<&PathBuf>,
     dump_frame_path: Option<&PathBuf>,
     debug: bool,
+    spc_trace: usize,
+    cpu_trace: usize,
 ) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -147,6 +160,13 @@ fn run(
             return ExitCode::FAILURE;
         }
     };
+
+    if spc_trace > 0 {
+        machine.memory_mut().apu_mut().set_spc_trace(spc_trace);
+    }
+    if cpu_trace > 0 {
+        machine.set_cpu_trace(cpu_trace);
+    }
 
     let mut last_hash = 0;
     for _ in 0..frames {
@@ -198,6 +218,56 @@ fn run(
             apu.spc().psw
         );
         println!("port writes: {:02x?}", apu.port_trace());
+        let writes = apu.cpu_port_writes();
+        let reads = apu.spc_port_reads();
+        println!(
+            "cpu port writes (last 12 of {}): {:?}",
+            writes.len(),
+            &writes[writes.len().saturating_sub(12)..]
+        );
+        println!(
+            "spc port reads (last 8 of {}): {:?}",
+            reads.len(),
+            &reads[reads.len().saturating_sub(8)..]
+        );
+        println!("boot log: {:04x?}", apu.boot_log());
+        let writes = apu.boot_writes();
+        println!("boot writes ({}): {:02x?}", writes.len(), writes);
+        let aram = apu.aram();
+        println!("aram 09e0: {:02x?}", &aram[0x09E0..0x0A00]);
+        println!("aram 0500: {:02x?}", &aram[0x0500..0x0520]);
+        println!("aram 0550: {:02x?}", &aram[0x0550..0x0570]);
+        println!("aram 1300: {:02x?}", &aram[0x1300..0x1380]);
+        println!("aram ffde: {:02x?}", &aram[0xFFC0..0xFFE0]);
+
+        for record in machine.cpu_trace() {
+            println!(
+                "cpu {:02x}:{:04x}: {:02x}  a={:04x} x={:04x} y={:04x} sp={:04x} p={:02x}",
+                record.pbr,
+                record.pc,
+                record.opcode,
+                record.a,
+                record.x,
+                record.y,
+                record.sp,
+                record.p
+            );
+        }
+
+        let spc_trace = apu.spc_trace();
+        for record in spc_trace.iter().rev().take(5000).rev() {
+            println!(
+                "spc {:04x}: {:02x} -> {:04x}  a={:02x} x={:02x} y={:02x} psw={:02x} sp={:02x}",
+                record.pc,
+                record.opcode,
+                record.next_pc,
+                record.a,
+                record.x,
+                record.y,
+                record.psw,
+                record.sp
+            );
+        }
     }
 
     if let Some(dump_frame_path) = dump_frame_path {

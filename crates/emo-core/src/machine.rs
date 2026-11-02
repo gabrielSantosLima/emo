@@ -4,6 +4,7 @@
 //! but the guest only ever sees master cycles, which is what makes emulation
 //! deterministic and save states reproducible.
 
+use std::collections::VecDeque;
 use std::fmt;
 
 use emo_cpu::Cpu;
@@ -21,6 +22,27 @@ pub const MASTER_CYCLES_PER_CPU_CYCLE: u64 = 6;
 
 /// Version written into serialized save states.
 const STATE_VERSION: u32 = 1;
+
+/// One executed S-CPU instruction, for debugging.
+#[derive(Clone, Copy, Debug)]
+pub struct CpuTrace {
+    /// Program bank.
+    pub pbr: u8,
+    /// Program counter before the instruction.
+    pub pc: u16,
+    /// Opcode byte.
+    pub opcode: u8,
+    /// Accumulator after the instruction.
+    pub a: u16,
+    /// X after the instruction.
+    pub x: u16,
+    /// Y after the instruction.
+    pub y: u16,
+    /// Stack pointer after the instruction.
+    pub sp: u16,
+    /// Status byte after the instruction.
+    pub p: u8,
+}
 
 /// Result of running one frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +130,8 @@ pub struct Machine {
     frame: u64,
     last_line: u64,
     last_clock: u64,
+    trace: VecDeque<CpuTrace>,
+    trace_limit: usize,
 }
 
 impl Machine {
@@ -129,6 +153,8 @@ impl Machine {
             frame: 0,
             last_line: 0,
             last_clock: 0,
+            trace: VecDeque::new(),
+            trace_limit: 0,
         };
         machine.reset();
 
@@ -208,6 +234,30 @@ impl Machine {
             }
 
             let before = self.cpu.cycles();
+            if self.trace_limit > 0 {
+                let registers = self.cpu.registers();
+                let mapped = self.memory.peek(registers.pbr, registers.pc);
+                let _ = &mapped;
+                let opcode = mapped.unwrap_or(0);
+                self.trace.push_back(CpuTrace {
+                    pbr: registers.pbr,
+                    pc: registers.pc,
+                    opcode,
+                    a: registers.a,
+                    x: registers.x,
+                    y: registers.y,
+                    sp: registers.s,
+                    p: registers.p,
+                });
+                while self.trace.len() > self.trace_limit {
+                    self.trace.pop_front();
+                }
+                if mapped.is_none() {
+                    // Freeze the ring at the first unmapped fetch.
+                    self.trace_limit = 0;
+                }
+            }
+
             self.cpu.step(&mut self.memory);
             let elapsed = self.cpu.cycles() - before;
 
@@ -252,6 +302,18 @@ impl Machine {
         }
 
         self.clock += self.memory.take_pending_cycles();
+    }
+
+    /// Record the last `limit` CPU instructions.
+    pub fn set_cpu_trace(&mut self, limit: usize) {
+        self.trace_limit = limit;
+        self.trace.clear();
+    }
+
+    /// Recorded CPU instructions, oldest first.
+    #[must_use]
+    pub fn cpu_trace(&self) -> Vec<CpuTrace> {
+        self.trace.iter().copied().collect()
     }
 
     /// Mixed stereo audio produced so far.
