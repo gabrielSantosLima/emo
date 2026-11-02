@@ -620,6 +620,104 @@ mod tests {
         assert!(apu.spc().psw & 0x40 != 0, "overflow should be set");
     }
 
+    fn run_program(apu: &mut Apu, program: &[u8]) {
+        for (index, byte) in program.iter().enumerate() {
+            apu.spc_write(0x0200 + index as u16, *byte);
+        }
+        apu.spc_mut().reset(0x0200);
+    }
+
+    #[test]
+    fn mov1_reads_and_writes_memory_bits() {
+        let mut apu = Apu::new();
+        apu.spc_write(0x1418, 0x10);
+        // MOV1 C,$1418.4 ; MOV X,#0
+        run_program(&mut apu, &[0xAA, 0x18, 0x14, 0x04, 0xCD, 0x00]);
+        apu.spc_step();
+        assert_eq!(apu.spc().psw & 0x01, 1, "carry should mirror the bit");
+
+        // MOV1 $1418.4,C with C=1 sets the bit.
+        run_program(&mut apu, &[0xCA, 0x18, 0x14, 0x04]);
+        apu.spc_mut().psw |= 0x01;
+        apu.spc_step();
+        assert_eq!(apu.aram()[0x1418] & 0x10, 0x10);
+    }
+
+    #[test]
+    fn set1_and_bbc_use_the_direct_page() {
+        let mut apu = Apu::new();
+        apu.spc_write(0x0014, 0x00);
+        // SET1 $14.2 ; BBC $14.2,+1 ; MOV X,#1 ; MOV X,#2
+        run_program(
+            &mut apu,
+            &[0x42, 0x14, 0x53, 0x14, 0x01, 0xCD, 0x01, 0xCD, 0x02],
+        );
+
+        apu.spc_step();
+        assert_eq!(apu.aram()[0x0014] & 0x04, 0x04);
+
+        apu.spc_step();
+        assert_eq!(apu.spc().pc, 0x0205, "bit set means BBC does not branch");
+
+        apu.spc_step();
+        apu.spc_step();
+        assert_eq!(apu.spc().x, 0x02);
+    }
+
+    #[test]
+    fn addw_subw_and_cmpw_operate_on_words() {
+        let mut apu = Apu::new();
+        apu.spc_write(0x0010, 0x11);
+        apu.spc_write(0x0011, 0x11);
+        // MOVW YA,$10 ; ADDW YA,$10
+        run_program(&mut apu, &[0xBA, 0x10, 0x7A, 0x10]);
+        apu.spc_step();
+        assert_eq!(
+            u16::from(apu.spc().a) | (u16::from(apu.spc().y) << 8),
+            0x1111
+        );
+        apu.spc_step();
+        assert_eq!(
+            u16::from(apu.spc().a) | (u16::from(apu.spc().y) << 8),
+            0x2222
+        );
+        assert_eq!(apu.spc().psw & 0x01, 0);
+
+        // SUBW YA,$10
+        run_program(&mut apu, &[0xBA, 0x10, 0x9A, 0x10]);
+        apu.spc_step();
+        apu.spc_step();
+        assert_eq!(
+            u16::from(apu.spc().a) | (u16::from(apu.spc().y) << 8),
+            0x0000
+        );
+        assert_eq!(apu.spc().psw & 0x02, 0x02, "zero flag after equal words");
+    }
+
+    #[test]
+    fn movw_round_trips_through_direct_page() {
+        let mut apu = Apu::new();
+        // MOVW YA,$10 writes YA=0 (reset), then MOVW $12,YA.
+        run_program(&mut apu, &[0xBA, 0x10, 0xDA, 0x12]);
+        apu.spc_step();
+        apu.spc_step();
+        assert_eq!(apu.aram()[0x12], 0);
+        assert_eq!(apu.aram()[0x13], 0);
+    }
+
+    #[test]
+    fn indirect_indexed_addressing_uses_the_pointer() {
+        let mut apu = Apu::new();
+        apu.spc_write(0x0020, 0x00);
+        apu.spc_write(0x0021, 0x03);
+        apu.spc_write(0x0305, 0x5A);
+        // MOV Y,#5 ; MOV A,[$20]+Y
+        run_program(&mut apu, &[0x8D, 0x05, 0xF7, 0x20]);
+        apu.spc_step();
+        apu.spc_step();
+        assert_eq!(apu.spc().a, 0x5A);
+    }
+
     #[test]
     fn dsp_produces_silent_samples_with_no_voices() {
         let mut apu = Apu::new();
