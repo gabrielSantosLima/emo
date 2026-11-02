@@ -7,3 +7,4 @@ PLAN.md
 # ROM images are never committed
 *.sfc
 *.smc
+roms/ipl.bin
