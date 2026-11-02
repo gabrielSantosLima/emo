@@ -1,10 +1,15 @@
 //! `emo` command-line entry point.
 //!
-//! The binary is intentionally small: it exposes the machine's timing model and
-//! is the seed for the headless runner that arrives with the CPU milestone.
+//! The binary exposes the machine's timing model and the instruction vector
+//! runner. The headless emulator runner arrives with the machine milestone.
+
+use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use emo_core::VideoStandard;
+
+mod vectors;
 
 /// Top-level command-line interface.
 #[derive(Debug, Parser)]
@@ -21,6 +26,11 @@ enum Command {
         /// Video standard to describe.
         #[arg(value_enum, default_value_t = StandardArg::Ntsc)]
         standard: StandardArg,
+    },
+    /// Run SingleStepTests/65816 vectors against the CPU core.
+    Verify {
+        /// A vector JSON file or a directory of vector files.
+        path: PathBuf,
     },
 }
 
@@ -40,12 +50,92 @@ impl From<StandardArg> for VideoStandard {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Timing { standard } => print!("{}", timing_report(standard.into())),
+        Command::Timing { standard } => {
+            print!("{}", timing_report(standard.into()));
+            ExitCode::SUCCESS
+        }
+        Command::Verify { path } => verify(&path),
     }
+}
+
+/// Run every vector file under `path` and report divergences.
+fn verify(path: &PathBuf) -> ExitCode {
+    let files = match vector_files(path) {
+        Ok(files) => files,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if files.is_empty() {
+        eprintln!("no .json vector files found in {}", path.display());
+        return ExitCode::FAILURE;
+    }
+
+    let mut total = vectors::Report::default();
+
+    for file in &files {
+        match vectors::run_file(file) {
+            Ok(report) => {
+                let cases = report.passed + report.failed;
+                let name = file.file_name().map_or_else(
+                    || file.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                if report.failed == 0 {
+                    println!("{name}: {}/{} passed", report.passed, cases);
+                } else {
+                    println!(
+                        "{name}: {}/{} passed, {} failed",
+                        report.passed, cases, report.failed
+                    );
+                    for failure in &report.failures {
+                        println!("  {failure}");
+                    }
+                }
+                total.merge(report);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    println!("total: {} passed, {} failed", total.passed, total.failed);
+
+    if total.failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn vector_files(path: &PathBuf) -> Result<Vec<PathBuf>, String> {
+    if path.is_file() {
+        return Ok(vec![path.clone()]);
+    }
+
+    let entries = std::fs::read_dir(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|entry| {
+            entry
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect();
+    files.sort();
+
+    Ok(files)
 }
 
 /// Render the timing table for one video standard.
