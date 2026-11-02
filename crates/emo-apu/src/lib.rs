@@ -669,6 +669,64 @@ mod tests {
         assert_eq!(apu.cpu_read(0), 0xAA);
     }
 
+    fn pump(apu: &mut Apu, until: impl Fn(&Apu) -> bool) -> bool {
+        for _ in 0..2000 {
+            if until(apu) {
+                return true;
+            }
+            apu.advance(500);
+        }
+        until(apu)
+    }
+
+    #[test]
+    fn real_ipl_rom_uploads_and_jumps() {
+        let Ok(path) = std::env::var("EMO_IPL_ROM") else {
+            return;
+        };
+        let bytes = std::fs::read(path).expect("ipl rom");
+        let mut apu = Apu::new();
+        apu.load_ipl(&bytes);
+
+        assert!(
+            pump(&mut apu, |apu| apu.cpu_read(0) == 0xAA
+                && apu.cpu_read(1) == 0xBB),
+            "ipl did not announce AA/BB"
+        );
+
+        // MOV A,#$42 ; MOV $10,A ; BRA -2
+        let program = [0xE8, 0x42, 0xC4, 0x10, 0x2F, 0xFE];
+        let base = 0x0200u16;
+
+        apu.cpu_write(2, base as u8);
+        apu.cpu_write(3, (base >> 8) as u8);
+        apu.cpu_write(1, 0x01);
+        apu.cpu_write(0, 0xCC);
+        assert!(pump(&mut apu, |apu| apu.cpu_read(0) == 0xCC));
+
+        for (index, byte) in program.iter().enumerate() {
+            let counter = index as u8;
+            apu.cpu_write(1, *byte);
+            apu.cpu_write(0, counter);
+            assert!(
+                pump(&mut apu, |apu| apu.cpu_read(0) == counter),
+                "no echo for counter {counter}"
+            );
+        }
+
+        let last = (program.len() - 1) as u8;
+        apu.cpu_write(2, base as u8);
+        apu.cpu_write(3, (base >> 8) as u8);
+        apu.cpu_write(1, 0x00);
+        apu.cpu_write(0, last.wrapping_add(2));
+
+        assert!(
+            pump(&mut apu, |apu| apu.aram()[0x10] == 0x42),
+            "uploaded program did not run (pc={:#06x})",
+            apu.spc().pc
+        );
+    }
+
     #[test]
     fn ipl_protocol_uploads_a_block_and_jumps() {
         let mut apu = Apu::new();
