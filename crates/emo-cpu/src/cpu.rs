@@ -702,7 +702,7 @@ impl Cpu {
             }
             0x0B => {
                 self.idle();
-                self.push(bus, self.dbr);
+                self.push_word(bus, self.d);
             }
             0x0C => {
                 let ea = self.ea_abs(bus);
@@ -953,7 +953,11 @@ impl Cpu {
             }
             0x48 => {
                 self.idle();
-                self.push(bus, self.a as u8);
+                if self.m8() {
+                    self.push(bus, self.a as u8);
+                } else {
+                    self.push_word(bus, self.a);
+                }
             }
             0x49 => {
                 let value = self.fetch_m(bus);
@@ -1019,7 +1023,11 @@ impl Cpu {
             }
             0x5A => {
                 self.idle();
-                self.push(bus, self.y as u8);
+                if self.x8() {
+                    self.push(bus, self.y as u8);
+                } else {
+                    self.push_word(bus, self.y);
+                }
             }
             0x5B => {
                 self.d = self.a;
@@ -1077,8 +1085,12 @@ impl Cpu {
             }
             0x68 => {
                 self.idle();
-                let value = self.pull(bus);
-                self.set_a(u16::from(value));
+                let value = if self.m8() {
+                    u16::from(self.pull(bus))
+                } else {
+                    self.pull_word(bus)
+                };
+                self.set_a(value);
                 self.set_nz_m(self.a);
                 self.idle();
             }
@@ -1148,8 +1160,12 @@ impl Cpu {
             }
             0x7A => {
                 self.idle();
-                let value = self.pull(bus);
-                self.set_y(u16::from(value));
+                let value = if self.x8() {
+                    u16::from(self.pull(bus))
+                } else {
+                    self.pull_word(bus)
+                };
+                self.set_y(value);
                 self.set_nz_x(self.y);
                 self.idle();
             }
@@ -1551,7 +1567,11 @@ impl Cpu {
             }
             0xDA => {
                 self.idle();
-                self.push(bus, self.x as u8);
+                if self.x8() {
+                    self.push(bus, self.x as u8);
+                } else {
+                    self.push_word(bus, self.x);
+                }
             }
             0xDB => {
                 self.stopped = true;
@@ -1684,8 +1704,12 @@ impl Cpu {
             }
             0xFA => {
                 self.idle();
-                let value = self.pull(bus);
-                self.set_x(u16::from(value));
+                let value = if self.x8() {
+                    u16::from(self.pull(bus))
+                } else {
+                    self.pull_word(bus)
+                };
+                self.set_x(value);
                 self.set_nz_x(self.x);
                 self.idle();
             }
@@ -2134,7 +2158,10 @@ impl Cpu {
         }
         self.push_interrupt(bus, (pc >> 8) as u8);
         self.push_interrupt(bus, pc as u8);
-        let pushed = if software { p } else { p & !0x10 };
+        // In emulation mode bit 4 of the stacked status is the ghost B flag:
+        // hardware interrupts push 0, BRK/PHP push 1. In native mode the
+        // status byte is pushed verbatim (bit 4 is the X index-width flag).
+        let pushed = if !software && self.e { p & !0x10 } else { p };
         self.push_interrupt(bus, pushed);
         self.set_flag(FLAG_I, true);
         self.set_flag(FLAG_D, false);
@@ -2290,5 +2317,122 @@ impl Vector {
             Self::Brk => 0xFFE6,
             Self::Cop => 0xFFE4,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::FlatMemory;
+
+    fn native_cpu(p: u8) -> Cpu {
+        let mut cpu = Cpu::new();
+        cpu.set_registers(Registers {
+            a: 0,
+            x: 0,
+            y: 0,
+            s: 0x01ff,
+            d: 0,
+            pc: 0,
+            pbr: 0,
+            dbr: 0,
+            p,
+            e: false,
+        });
+        cpu
+    }
+
+    fn run(cpu: &mut Cpu, bus: &mut FlatMemory, steps: usize) {
+        for _ in 0..steps {
+            cpu.step(bus);
+        }
+    }
+
+    #[test]
+    fn sixteen_bit_accumulator_push_and_pull() {
+        let mut cpu = native_cpu(FLAG_I);
+        let mut bus = FlatMemory::new();
+        bus.load(&[
+            0xa9, 0x34, 0x12, // LDA #$1234
+            0x48, // PHA
+            0xa9, 0x00, 0x00, // LDA #$0000
+            0x68, // PLA
+            0xdb, // STP
+        ]);
+
+        run(&mut cpu, &mut bus, 5);
+
+        assert_eq!(cpu.registers().a, 0x1234);
+        assert_eq!(cpu.registers().s, 0x01ff);
+    }
+
+    #[test]
+    fn sixteen_bit_index_push_and_pull() {
+        let mut cpu = native_cpu(FLAG_I | FLAG_M);
+        let mut bus = FlatMemory::new();
+        bus.load(&[
+            0xa2, 0x78, 0x56, // LDX #$5678
+            0xda, // PHX
+            0xa2, 0x00, 0x00, // LDX #$0000
+            0xfa, // PLX
+            0xa0, 0xcd, 0xab, // LDY #$ABCD
+            0x5a, // PHY
+            0xa0, 0x00, 0x00, // LDY #$0000
+            0x7a, // PLY
+            0xdb, // STP
+        ]);
+
+        run(&mut cpu, &mut bus, 9);
+
+        assert_eq!(cpu.registers().x, 0x5678);
+        assert_eq!(cpu.registers().y, 0xabcd);
+        assert_eq!(cpu.registers().s, 0x01ff);
+    }
+
+    #[test]
+    fn push_and_pull_direct_page_use_two_bytes() {
+        let mut cpu = native_cpu(FLAG_I);
+        let mut bus = FlatMemory::new();
+        bus.load(&[
+            0xa9, 0x21, 0x43, // LDA #$4321
+            0x5b, // TCD
+            0x0b, // PHD
+            0xa9, 0x00, 0x00, // LDA #$0000
+            0x5b, // TCD
+            0x2b, // PLD
+            0xdb, // STP
+        ]);
+
+        run(&mut cpu, &mut bus, 6);
+
+        assert_eq!(cpu.registers().d, 0x4321);
+        assert_eq!(cpu.registers().s, 0x01ff);
+    }
+
+    #[test]
+    fn native_interrupt_preserves_index_width_in_stacked_status() {
+        let mut cpu = native_cpu(FLAG_I | FLAG_M | FLAG_X);
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0xffea, 0x00);
+        bus.write(0, 0xffeb, 0x80);
+
+        cpu.set_nmi(true);
+        cpu.step(&mut bus);
+
+        // P is stacked below PCL/PCH/PBR; after the push S points below it.
+        assert_eq!(bus.read(0, 0x01fc), FLAG_I | FLAG_M | FLAG_X);
+    }
+
+    #[test]
+    fn emulation_interrupt_clears_the_ghost_break_flag() {
+        let mut cpu = Cpu::new();
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0xfffa, 0x00);
+        bus.write(0, 0xfffb, 0x80);
+
+        cpu.set_nmi(true);
+        cpu.step(&mut bus);
+
+        assert_eq!(bus.read(0, 0x01fd), FLAG_I | FLAG_M);
     }
 }

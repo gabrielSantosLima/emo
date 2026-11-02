@@ -111,7 +111,7 @@ impl Ppu {
         let height = usize::from(timing.visible_lines);
         Self {
             timing,
-            vram: vec![0; 0x8000],
+            vram: vec![0; 0x10000],
             cgram: vec![0; 256],
             oam: vec![0; 0x220],
             framebuffer: vec![0; SCREEN_WIDTH * height * 3],
@@ -870,6 +870,17 @@ mod tests {
 
         assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
         assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[248, 0, 0]);
+    }
+
+    #[test]
+    fn vram_covers_all_32768_words() {
+        let mut ppu = ppu();
+
+        ppu.write_vram_word(0x4000, 0x1234);
+        ppu.write_vram_word(0x7fff, 0xabcd);
+
+        assert_eq!(ppu.read_vram_word(0x4000), 0x1234);
+        assert_eq!(ppu.read_vram_word(0x7fff), 0xabcd);
     }
 
     #[test]
