@@ -85,6 +85,7 @@ pub struct Ppu {
     wobjsel: u8,
     wbglog: u8,
     wobjlog: u8,
+    wh: [u8; 4],
     cgwsel: u8,
     cgadsub: u8,
     coldata: [u8; 3],
@@ -144,6 +145,7 @@ impl Ppu {
             wobjsel: 0,
             wbglog: 0,
             wobjlog: 0,
+            wh: [0; 4],
             cgwsel: 0,
             cgadsub: 0,
             coldata: [0; 3],
@@ -404,9 +406,9 @@ impl Ppu {
             0x2123 => self.w12sel = value,
             0x2124 => self.w34sel = value,
             0x2125 => self.wobjsel = value,
-            0x2126 => self.wbglog = value,
-            0x2127 => self.wobjlog = value,
-            0x2128..=0x212B => {}
+            0x2126..=0x2129 => self.wh[usize::from(addr - 0x2126)] = value,
+            0x212A => self.wbglog = value,
+            0x212B => self.wobjlog = value,
             0x212C => self.tm = value,
             0x212D => self.ts = value,
             0x212E => self.tmw = value,
@@ -515,7 +517,7 @@ impl Ppu {
         let mut index = 0u16;
 
         for (layer, ranks) in PRIORITY_RANK.iter().enumerate() {
-            if self.tm & (1 << layer) == 0 {
+            if self.tm & (1 << layer) == 0 || self.layer_hidden(layer, x) {
                 continue;
             }
             if let Some((palette_index, priority)) = self.bg_pixel(layer, x, y, mode) {
@@ -528,6 +530,7 @@ impl Ppu {
         }
 
         if self.tm & 0x10 != 0
+            && !self.layer_hidden(4, x)
             && let Some((palette_index, priority)) = self.sprite_pixel(x, y)
         {
             let rank = PRIORITY_RANK[usize::from(priority & 3)][4];
@@ -559,6 +562,53 @@ impl Ppu {
             (u16::from(g) * brightness / 16) as u8,
             (u16::from(b) * brightness / 16) as u8,
         )
+    }
+
+    fn window_inside(&self, window: usize, x: u16) -> bool {
+        let left = u16::from(self.wh[window * 2]);
+        let right = u16::from(self.wh[window * 2 + 1]);
+        let x = x & 0xff;
+        if left <= right {
+            x >= left && x <= right
+        } else {
+            x >= left || x <= right
+        }
+    }
+
+    fn window_field(&self, layer: usize, window: usize) -> u8 {
+        let (selector, shift) = match layer {
+            0 => (self.w12sel, 0),
+            1 => (self.w12sel, 2),
+            2 => (self.w34sel, 0),
+            3 => (self.w34sel, 2),
+            _ => (self.wobjsel, 0),
+        };
+        (selector >> (shift + window * 4)) & 0x03
+    }
+
+    fn layer_window(&self, layer: usize, x: u16) -> bool {
+        let mut masks = [false; 2];
+        for (window, mask) in masks.iter_mut().enumerate() {
+            let field = self.window_field(layer, window);
+            if field & 0x01 != 0 {
+                *mask = self.window_inside(window, x) != (field & 0x02 != 0);
+            }
+        }
+        let logic = if layer == 4 {
+            self.wobjlog & 0x03
+        } else {
+            (self.wbglog >> (layer * 2)) & 0x03
+        };
+        match logic {
+            0 => masks[0] || masks[1],
+            1 => masks[0] && masks[1],
+            2 => masks[0] ^ masks[1],
+            _ => !(masks[0] ^ masks[1]),
+        }
+    }
+
+    fn layer_hidden(&self, layer: usize, x: u16) -> bool {
+        self.tmw & (1 << layer) != 0 && self.layer_window(layer, x)
     }
 
     fn bg_pixel(&self, layer: usize, x: u16, y: u16, mode: u8) -> Option<(u16, u8)> {
@@ -945,6 +995,38 @@ mod tests {
 
         assert_eq!(ppu.read_vram_word(0x4000), 0x1234);
         assert_eq!(ppu.read_vram_word(0x7fff), 0xabcd);
+    }
+
+    #[test]
+    fn window_registers_have_the_correct_addresses() {
+        let mut ppu = ppu();
+        ppu.write_register(0x2126, 0x10);
+        ppu.write_register(0x2127, 0x20);
+        ppu.write_register(0x2128, 0x30);
+        ppu.write_register(0x2129, 0x40);
+        ppu.write_register(0x212A, 0x55);
+        ppu.write_register(0x212B, 0xAA);
+
+        assert_eq!(ppu.wh, [0x10, 0x20, 0x30, 0x40]);
+        assert_eq!(ppu.wbglog, 0x55);
+        assert_eq!(ppu.wobjlog, 0xAA);
+    }
+
+    #[test]
+    fn window_masks_disable_the_selected_layer() {
+        let mut ppu = ppu();
+        ppu.write_register(0x2126, 0x10); // window 1 left
+        ppu.write_register(0x2127, 0x20); // window 1 right
+        ppu.write_register(0x2123, 0x01); // BG1: window 1 enabled, not inverted
+        ppu.write_register(0x212E, 0x01); // TMW: disable BG1 inside the window
+
+        assert!(ppu.layer_hidden(0, 0x18));
+        assert!(!ppu.layer_hidden(0, 0x08));
+        assert!(!ppu.layer_hidden(1, 0x18));
+
+        ppu.write_register(0x2123, 0x03); // inverted: outside is masked
+        assert!(!ppu.layer_hidden(0, 0x18));
+        assert!(ppu.layer_hidden(0, 0x08));
     }
 
     #[test]
