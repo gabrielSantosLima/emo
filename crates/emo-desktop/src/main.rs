@@ -618,29 +618,35 @@ impl ApplicationHandler for App {
             return;
         }
 
-        if self.rewinding && !self.rewind.is_empty() {
-            self.rewind_frame();
-        } else {
-            let frames = if self.fast_forward {
-                FAST_FORWARD_FRAMES
+        // Only advance the machine when the frame deadline is reached. Waking
+        // up for a redraw must never run extra frames, otherwise the emulator
+        // spins at whatever rate the window system delivers paint messages.
+        if now >= self.next_frame {
+            if self.rewinding && !self.rewind.is_empty() {
+                self.rewind_frame();
             } else {
-                1
-            };
-            for _ in 0..frames {
-                self.run_frame();
-                self.frames_until_snapshot = self.frames_until_snapshot.saturating_sub(1);
-                if self.frames_until_snapshot == 0 {
-                    self.snapshot();
+                let frames = if self.fast_forward {
+                    FAST_FORWARD_FRAMES
+                } else {
+                    1
+                };
+                for _ in 0..frames {
+                    self.run_frame();
+                    self.frames_until_snapshot = self.frames_until_snapshot.saturating_sub(1);
+                    if self.frames_until_snapshot == 0 {
+                        self.snapshot();
+                    }
                 }
+            }
+
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            if self.next_frame <= Instant::now() {
+                self.next_frame = Instant::now() + interval;
             }
         }
 
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
-        if self.next_frame <= now {
-            self.next_frame = now + interval;
-        }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
     }
 }
