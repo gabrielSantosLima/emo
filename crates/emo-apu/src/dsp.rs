@@ -97,6 +97,9 @@ pub struct Dsp {
     endx: u8,
     noise_lfsr: u16,
     noise_clock: u32,
+    echo_offset: u32,
+    echo_history: [[i16; 2]; 8],
+    echo_history_pos: usize,
 }
 
 impl Default for Dsp {
@@ -116,6 +119,9 @@ impl Dsp {
             endx: 0,
             noise_lfsr: 1,
             noise_clock: 0,
+            echo_offset: 0,
+            echo_history: [[0; 2]; 8],
+            echo_history_pos: 0,
         }
     }
 
@@ -290,11 +296,13 @@ impl Dsp {
     }
 
     /// Generate one stereo sample at 32 kHz.
-    pub fn sample(&mut self, aram: &[u8]) -> (i16, i16) {
+    pub fn sample(&mut self, aram: &mut [u8]) -> (i16, i16) {
         self.clock_noise();
 
         let mut left = 0i32;
         let mut right = 0i32;
+        let mut echo_left = 0i32;
+        let mut echo_right = 0i32;
 
         for voice in 0..VOICES {
             if self.voices[voice].state == EnvelopeState::Off {
@@ -356,24 +364,85 @@ impl Dsp {
 
             let volume_left = i32::from(self.registers[voice * 0x10] as i8);
             let volume_right = i32::from(self.registers[voice * 0x10 + 1] as i8);
-            left += i32::from(output) * volume_left / 128;
-            right += i32::from(output) * volume_right / 128;
+            let voice_left = i32::from(output) * volume_left / 128;
+            let voice_right = i32::from(output) * volume_right / 128;
+            left += voice_left;
+            right += voice_right;
+            if self.registers[0x4D] & (1 << voice) != 0 {
+                echo_left += voice_left;
+                echo_right += voice_right;
+            }
         }
+
+        let (echo_in_left, echo_in_right) = self.echo(aram, (echo_left, echo_right));
+
+        let master_left = i32::from(self.registers[0x0C] as i8);
+        let master_right = i32::from(self.registers[0x1C] as i8);
+        let echo_volume_left = i32::from(self.registers[0x2C] as i8);
+        let echo_volume_right = i32::from(self.registers[0x3C] as i8);
+        let out_left = ((left * master_left) >> 7) + ((echo_in_left * echo_volume_left) >> 7);
+        let out_right = ((right * master_right) >> 7) + ((echo_in_right * echo_volume_right) >> 7);
 
         if self.registers[0x6C] & 0x40 != 0 {
             // FLG bit 6 mutes the amplifier output.
             return (0, 0);
         }
 
-        let master_left = i32::from(self.registers[0x0C] as i8);
-        let master_right = i32::from(self.registers[0x1C] as i8);
-        left = left * master_left / 128;
-        right = right * master_right / 128;
-
         (
-            left.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
-            right.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            out_left.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            out_right.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
         )
+    }
+
+    /// Run the echo unit for one sample: FIR over the ring buffer, add the
+    /// feedback and write it back. Returns the filtered echo input.
+    fn echo(&mut self, aram: &mut [u8], voice_echo: (i32, i32)) -> (i32, i32) {
+        let edl = self.registers[0x7D] & 0x0F;
+        let length = u32::from(edl) * 0x800;
+        if length == 0 {
+            return (0, 0);
+        }
+
+        let base = u32::from(self.registers[0x6D]) << 8;
+        let pointer = ((base + self.echo_offset) & 0xFFFF) as usize;
+        let read = |aram: &[u8], offset: usize| -> i16 {
+            let index = (pointer + offset) & 0xFFFF;
+            i16::from_le_bytes([aram[index], aram[(index + 1) & 0xFFFF]])
+        };
+        let left = read(aram, 0) >> 1;
+        let right = read(aram, 2) >> 1;
+
+        self.echo_history[self.echo_history_pos] = [left, right];
+        self.echo_history_pos = (self.echo_history_pos + 1) & 7;
+
+        let mut filtered_left = 0i32;
+        let mut filtered_right = 0i32;
+        for tap in 0..8 {
+            let coefficient = i32::from(self.registers[0x0F + tap * 0x10] as i8);
+            let sample = self.echo_history[(self.echo_history_pos + 7 - tap) & 7];
+            filtered_left += (i32::from(sample[0]) * coefficient) >> 6;
+            filtered_right += (i32::from(sample[1]) * coefficient) >> 6;
+        }
+        let filtered_left = clamp_sample(filtered_left) & !1;
+        let filtered_right = clamp_sample(filtered_right) & !1;
+
+        let feedback = i32::from(self.registers[0x0D] as i8);
+        let left_out = clamp_sample(voice_echo.0 + ((filtered_left * feedback) >> 7)) & !1;
+        let right_out = clamp_sample(voice_echo.1 + ((filtered_right * feedback) >> 7)) & !1;
+
+        if self.registers[0x6C] & 0x20 == 0 {
+            aram[pointer] = left_out as u8;
+            aram[(pointer + 1) & 0xFFFF] = (left_out >> 8) as u8;
+            aram[(pointer + 2) & 0xFFFF] = right_out as u8;
+            aram[(pointer + 3) & 0xFFFF] = (right_out >> 8) as u8;
+        }
+
+        self.echo_offset += 4;
+        if self.echo_offset >= length {
+            self.echo_offset = 0;
+        }
+
+        (filtered_left, filtered_right)
     }
 
     fn clock_noise(&mut self) {
@@ -476,6 +545,10 @@ impl Dsp {
     }
 }
 
+fn clamp_sample(value: i32) -> i32 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+}
+
 fn decode_brr(block: &[u8], output: &mut [i16; 16], previous: &mut i16, older: &mut i16) {
     let header = block[0];
     let range = i32::from((header >> 4) & 0x0F);
@@ -556,7 +629,7 @@ mod tests {
         key_on_voice(&mut dsp, &mut aram, 0);
 
         assert_eq!(dsp.voices[0].state, EnvelopeState::Attack);
-        dsp.sample(&aram);
+        dsp.sample(&mut aram);
         assert!(dsp.voices[0].envelope > 0);
     }
 
@@ -577,7 +650,7 @@ mod tests {
         key_on_voice(&mut dsp, &mut aram, 0);
 
         for _ in 0..4000 {
-            dsp.sample(&aram);
+            dsp.sample(&mut aram);
         }
         assert_eq!(dsp.voices[0].state, EnvelopeState::Sustain);
         assert!(dsp.voices[0].envelope > 0);
@@ -585,7 +658,7 @@ mod tests {
         dsp.set_address(0x5C);
         dsp.write_data(&mut aram, 0x01);
         for _ in 0..1000 {
-            dsp.sample(&aram);
+            dsp.sample(&mut aram);
         }
         assert_eq!(dsp.voices[0].state, EnvelopeState::Off);
         dsp.set_address(0x7C);
@@ -599,7 +672,7 @@ mod tests {
         key_on_voice(&mut dsp, &mut aram, 0);
 
         for _ in 0..32 {
-            dsp.sample(&aram);
+            dsp.sample(&mut aram);
         }
 
         assert_eq!(dsp.voices[0].state, EnvelopeState::Off);
@@ -614,7 +687,7 @@ mod tests {
         key_on_voice(&mut dsp, &mut aram, 0);
 
         for _ in 0..32 {
-            dsp.sample(&aram);
+            dsp.sample(&mut aram);
         }
 
         assert_ne!(dsp.voices[0].state, EnvelopeState::Off);
@@ -640,13 +713,13 @@ mod tests {
         key_on_voice(&mut dsp, &mut aram, 0);
 
         for _ in 0..100 {
-            dsp.sample(&aram);
+            dsp.sample(&mut aram);
         }
-        assert_ne!(dsp.sample(&aram), (0, 0));
+        assert_ne!(dsp.sample(&mut aram), (0, 0));
 
         dsp.set_address(0x6C);
         dsp.write_data(&mut aram, 0x40);
-        assert_eq!(dsp.sample(&aram), (0, 0));
+        assert_eq!(dsp.sample(&mut aram), (0, 0));
     }
 
     #[test]
@@ -655,7 +728,7 @@ mod tests {
         let mut aram = aram_with_sample(0x0300, 0x01);
         key_on_voice(&mut dsp, &mut aram, 0);
         for _ in 0..32 {
-            dsp.sample(&aram);
+            dsp.sample(&mut aram);
         }
         dsp.set_address(0x7C);
         assert_eq!(dsp.read_data(&aram), 0x01);
