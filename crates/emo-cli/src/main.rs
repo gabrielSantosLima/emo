@@ -53,6 +53,9 @@ enum Command {
         /// Write the final 128 KiB of WRAM to a file.
         #[arg(long)]
         dump_wram: Option<PathBuf>,
+        /// Write the mixed stereo audio as raw signed 16-bit little-endian.
+        #[arg(long)]
+        dump_audio: Option<PathBuf>,
         /// Print CPU and APU state after the run.
         #[arg(long)]
         debug: bool,
@@ -114,6 +117,7 @@ fn main() -> ExitCode {
             dump_frame,
             dump_vram,
             dump_wram,
+            dump_audio,
             debug,
             spc_trace,
             cpu_trace,
@@ -128,6 +132,7 @@ fn main() -> ExitCode {
             dump_frame.as_ref(),
             dump_vram.as_ref(),
             dump_wram.as_ref(),
+            dump_audio.as_ref(),
             debug,
             spc_trace,
             cpu_trace,
@@ -150,6 +155,7 @@ fn run(
     dump_frame_path: Option<&PathBuf>,
     dump_vram_path: Option<&PathBuf>,
     dump_wram_path: Option<&PathBuf>,
+    dump_audio_path: Option<&PathBuf>,
     debug: bool,
     spc_trace: usize,
     cpu_trace: usize,
@@ -235,6 +241,7 @@ fn run(
     }
 
     let mut last_hash = 0;
+    let mut audio = Vec::new();
     for frame in 0..frames {
         let buttons = presses
             .iter()
@@ -244,6 +251,9 @@ fn run(
 
         let result = machine.run_frame();
         last_hash = result.hash;
+        if dump_audio_path.is_some() {
+            audio.extend(machine.take_audio());
+        }
         if hash {
             println!(
                 "frame {:6}  clock {:10}  hash {:016x}",
@@ -421,6 +431,17 @@ fn run(
     {
         eprintln!("failed to write {}: {error}", dump_wram_path.display());
         return ExitCode::FAILURE;
+    }
+
+    if let Some(dump_audio_path) = dump_audio_path {
+        let mut bytes = Vec::with_capacity(audio.len() * 2);
+        for sample in &audio {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        if let Err(error) = std::fs::write(dump_audio_path, bytes) {
+            eprintln!("failed to write {}: {error}", dump_audio_path.display());
+            return ExitCode::FAILURE;
+        }
     }
 
     if let Some(sram_path) = sram_path
