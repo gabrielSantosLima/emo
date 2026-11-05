@@ -322,7 +322,10 @@ impl Ppu {
                 } else {
                     (self.vram_read_buffer >> 8) as u8
                 };
-                self.vram_read_buffer = self.read_vram_word(self.vmaddr);
+                self.vram_read_buffer = self.read_vram_word(self.vram_address());
+                if (self.vmain & 0x80 != 0) == (addr == 0x213A) {
+                    self.increment_vram();
+                }
                 value
             }
             0x213B => {
@@ -386,13 +389,15 @@ impl Ppu {
             0x2116 => self.vmaddr = (self.vmaddr & 0xFF00) | u16::from(value),
             0x2117 => self.vmaddr = (self.vmaddr & 0x00FF) | (u16::from(value & 1) << 8),
             0x2118 => {
-                self.write_vram_byte(self.vmaddr, value, false);
+                let address = self.vram_address();
+                self.write_vram_byte(address, value, false);
                 if self.vmain & 0x80 == 0 {
                     self.increment_vram();
                 }
             }
             0x2119 => {
-                self.write_vram_byte(self.vmaddr, value, true);
+                let address = self.vram_address();
+                self.write_vram_byte(address, value, true);
                 if self.vmain & 0x80 != 0 {
                     self.increment_vram();
                 }
@@ -471,6 +476,21 @@ impl Ppu {
             self.m7[index] = raw as i16;
         }
         self.m7_low[index] = !self.m7_low[index];
+    }
+
+    /// Word address used by the next VRAM access, with the `VMAIN` address
+    /// translation applied (fullsnes: rotate the low 8/9/10 bits left by 3).
+    fn vram_address(&self) -> u16 {
+        let bits = match (self.vmain >> 2) & 0x03 {
+            0 => return self.vmaddr,
+            1 => 8,
+            2 => 9,
+            _ => 10,
+        };
+        let mask = (1u16 << bits) - 1;
+        let low = self.vmaddr & mask;
+        let rotated = ((low << 3) | (low >> (bits - 3))) & mask;
+        (self.vmaddr & !mask) | rotated
     }
 
     fn increment_vram(&mut self) {
@@ -1367,6 +1387,33 @@ mod tests {
 
         assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
         assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[248, 0, 0]);
+    }
+
+    #[test]
+    fn vmain_rotates_the_low_address_bits() {
+        let mut ppu = ppu();
+        ppu.write_register(0x2115, 0x04); // 8-bit translation
+        ppu.write_register(0x2116, 0x15);
+        ppu.write_register(0x2117, 0x00);
+        assert_eq!(ppu.vram_address(), 0x00A8);
+
+        ppu.write_register(0x2118, 0x5A);
+        assert_eq!(ppu.vram()[0x00A8 * 2], 0x5A);
+        // The address register itself is not translated (only incremented).
+        assert_eq!(ppu.vmaddr, 0x0016);
+    }
+
+    #[test]
+    fn vram_reads_increment_according_to_vmain() {
+        let mut ppu = ppu();
+        ppu.write_vram_word(0x0010, 0x1234);
+        ppu.write_register(0x2115, 0x80); // increment after the high byte
+        ppu.write_register(0x2116, 0x10);
+        ppu.write_register(0x2117, 0x00);
+
+        assert_eq!(ppu.read_register(0x213A), 0x00);
+        assert_eq!(ppu.vmaddr, 0x0011);
+        assert_eq!(ppu.read_register(0x213A), 0x12);
     }
 
     #[test]
