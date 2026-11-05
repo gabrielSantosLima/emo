@@ -338,6 +338,11 @@ impl Cpu {
         self.y = self.index(value);
     }
 
+    fn set_nz(&mut self, value: u8) {
+        self.set_flag(FLAG_N, value & 0x80 != 0);
+        self.set_flag(FLAG_Z, value == 0);
+    }
+
     fn set_nz_m(&mut self, value: u16) {
         if self.m8() {
             self.set_flag(FLAG_N, value & 0x80 != 0);
@@ -369,6 +374,11 @@ impl Cpu {
             self.p |= FLAG_M | FLAG_X;
             self.s = 0x0100 | (self.s & 0x00ff);
         }
+        // Switching the index registers to 8 bits clears their high bytes.
+        if self.x8() {
+            self.x &= 0x00ff;
+            self.y &= 0x00ff;
+        }
     }
 
     /* ---------- Operand reading ---------- */
@@ -378,7 +388,16 @@ impl Cpu {
             self.idle();
         }
         if self.m8() {
-            u16::from(self.read(bus, ea.bank(), ea.offset()))
+            let value = self.read(bus, ea.bank(), ea.offset());
+            if ea.offset() == 0xFCD9 {
+                eprintln!(
+                    "dbg read_m bank={:02x} off={:04x} -> {:02x}",
+                    ea.bank(),
+                    ea.offset(),
+                    value
+                );
+            }
+            u16::from(value)
         } else {
             // A 16-bit access keeps the bank and wraps the offset, it does not
             // carry into the next bank.
@@ -529,7 +548,7 @@ impl Cpu {
             addr: full & 0x00ff_ffff,
             high: (full + 1) & 0x00ff_ffff,
             read_penalty: false,
-            indexed: true,
+            indexed: false,
         }
     }
 
@@ -593,7 +612,7 @@ impl Cpu {
             addr: full & 0x00ff_ffff,
             high: (full + 1) & 0x00ff_ffff,
             read_penalty: false,
-            indexed: true,
+            indexed: false,
         }
     }
 
@@ -616,8 +635,8 @@ impl Cpu {
         Effective {
             addr: full,
             high: (full + 1) & 0x00ff_ffff,
-            read_penalty: !self.x8(),
-            indexed: true,
+            read_penalty: false,
+            indexed: false,
         }
     }
 
@@ -629,7 +648,7 @@ impl Cpu {
             let old = self.pc;
             let target = self.pc.wrapping_add_signed(i16::from(offset));
             self.idle();
-            if (old & 0xff00) != (target & 0xff00) {
+            if self.e && (old & 0xff00) != (target & 0xff00) {
                 self.idle();
             }
             self.pc = target;
@@ -879,6 +898,7 @@ impl Cpu {
                 self.idle();
                 let d = self.pull_word(bus);
                 self.d = d;
+                self.set_nz16(d);
                 self.idle();
             }
             0x2C => {
@@ -1228,7 +1248,16 @@ impl Cpu {
                 let ea = self.ea_long_x(bus);
                 self.op_adc(bus, ea);
             }
-            0x80 => self.branch(bus, true),
+            0x80 => {
+                let offset = self.fetch_byte(bus) as i8;
+                let old = self.pc;
+                self.idle();
+                let target = self.pc.wrapping_add_signed(i16::from(offset));
+                if self.e && (old & 0xff00) != (target & 0xff00) {
+                    self.idle();
+                }
+                self.pc = target;
+            }
             0x81 => {
                 let ea = self.ea_dir_ind_x(bus);
                 self.op_sta(bus, ea);
@@ -1264,7 +1293,8 @@ impl Cpu {
                 self.set_flag(FLAG_Z, value & self.a & self.mask_m() == 0);
             }
             0x8A => {
-                self.a = self.index(self.x);
+                let value = self.index(self.x);
+                self.set_a(value);
                 self.set_nz_m(self.a);
                 self.idle();
             }
@@ -1318,7 +1348,8 @@ impl Cpu {
                 self.op_sta(bus, ea);
             }
             0x98 => {
-                self.a = self.index(self.y);
+                let value = self.index(self.y);
+                self.set_a(value);
                 self.set_nz_m(self.a);
                 self.idle();
             }
@@ -1334,8 +1365,8 @@ impl Cpu {
                 self.idle();
             }
             0x9B => {
-                self.x = self.index(self.y);
-                self.set_nz_x(self.x);
+                self.set_y(self.index(self.x));
+                self.set_nz_x(self.y);
                 self.idle();
             }
             0x9C => {
@@ -1389,7 +1420,7 @@ impl Cpu {
                 self.op_lda(bus, ea);
             }
             0xA8 => {
-                self.y = self.a;
+                self.set_y(self.a);
                 self.set_nz_x(self.y);
                 self.idle();
             }
@@ -1398,7 +1429,7 @@ impl Cpu {
                 self.op_lda_imm(value);
             }
             0xAA => {
-                self.x = self.a;
+                self.set_x(self.a);
                 self.set_nz_x(self.x);
                 self.idle();
             }
@@ -1406,7 +1437,7 @@ impl Cpu {
                 self.idle();
                 let bank = self.pull(bus);
                 self.dbr = bank;
-                self.set_nz_m(u16::from(bank));
+                self.set_nz(bank);
                 self.idle();
             }
             0xAC => {
@@ -1463,13 +1494,13 @@ impl Cpu {
                 self.op_lda(bus, ea);
             }
             0xBA => {
-                self.x = self.s;
+                self.set_x(self.s);
                 self.set_nz_x(self.x);
                 self.idle();
             }
             0xBB => {
-                self.y = self.x;
-                self.set_nz_x(self.y);
+                self.set_x(self.index(self.y));
+                self.set_nz_x(self.x);
                 self.idle();
             }
             0xBC => {
@@ -1679,7 +1710,8 @@ impl Cpu {
             0xEA => self.idle(),
             0xEB => {
                 self.a = self.a.rotate_left(8);
-                self.set_nz_m(self.a);
+                // XBA always sets N/Z from the low byte.
+                self.set_nz(self.a as u8);
                 self.idle();
                 self.idle();
             }
@@ -1835,12 +1867,12 @@ impl Cpu {
 
     fn op_ora(&mut self, bus: &mut impl Bus, ea: Effective) {
         let value = self.read_m(bus, ea);
-        self.a = (self.a & !self.mask_m()) | (value & self.mask_m());
+        self.a |= value & self.mask_m();
         self.set_nz_m(self.a);
     }
 
     fn op_ora_imm(&mut self, value: u16) {
-        self.a = (self.a & !self.mask_m()) | (value & self.mask_m());
+        self.a |= value & self.mask_m();
         self.set_nz_m(self.a);
     }
 
@@ -2047,7 +2079,8 @@ impl Cpu {
         self.set_nz_m(self.a);
     }
 
-    fn op_asl(&mut self, bus: &mut impl Bus, ea: Effective) {
+    fn op_asl(&mut self, bus: &mut impl Bus, mut ea: Effective) {
+        ea.read_penalty = false;
         let value = self.read_m(bus, ea);
         let mask = self.mask_m();
         let cut = self.nmask_m();
@@ -2057,7 +2090,8 @@ impl Cpu {
         self.set_nz_m((value << 1) & mask);
     }
 
-    fn op_lsr(&mut self, bus: &mut impl Bus, ea: Effective) {
+    fn op_lsr(&mut self, bus: &mut impl Bus, mut ea: Effective) {
+        ea.read_penalty = false;
         let value = self.read_m(bus, ea);
         self.set_flag(FLAG_C, value & 1 != 0);
         self.idle();
@@ -2065,7 +2099,8 @@ impl Cpu {
         self.set_nz_m(value >> 1);
     }
 
-    fn op_rol(&mut self, bus: &mut impl Bus, ea: Effective) {
+    fn op_rol(&mut self, bus: &mut impl Bus, mut ea: Effective) {
+        ea.read_penalty = false;
         let value = self.read_m(bus, ea);
         let mask = self.mask_m();
         let carry = u16::from(self.flag(FLAG_C));
@@ -2076,7 +2111,8 @@ impl Cpu {
         self.set_nz_m(result);
     }
 
-    fn op_ror(&mut self, bus: &mut impl Bus, ea: Effective) {
+    fn op_ror(&mut self, bus: &mut impl Bus, mut ea: Effective) {
+        ea.read_penalty = false;
         let value = self.read_m(bus, ea);
         let carry = if self.flag(FLAG_C) { self.nmask_m() } else { 0 };
         self.set_flag(FLAG_C, value & 1 != 0);
@@ -2086,7 +2122,8 @@ impl Cpu {
         self.set_nz_m(result);
     }
 
-    fn op_inc_mem(&mut self, bus: &mut impl Bus, ea: Effective) {
+    fn op_inc_mem(&mut self, bus: &mut impl Bus, mut ea: Effective) {
+        ea.read_penalty = false;
         let value = self.read_m(bus, ea);
         self.idle();
         let mask = self.mask_m();
@@ -2095,7 +2132,8 @@ impl Cpu {
         self.set_nz_m(result);
     }
 
-    fn op_dec_mem(&mut self, bus: &mut impl Bus, ea: Effective) {
+    fn op_dec_mem(&mut self, bus: &mut impl Bus, mut ea: Effective) {
+        ea.read_penalty = false;
         let value = self.read_m(bus, ea);
         self.idle();
         let mask = self.mask_m();
@@ -2140,9 +2178,7 @@ impl Cpu {
 
     fn set_p_from_stack(&mut self, value: u8) {
         self.p = value;
-        if self.e {
-            self.p |= FLAG_M | FLAG_X;
-        }
+        self.normalize_widths();
     }
 
     fn op_block_move(&mut self, bus: &mut impl Bus, negative: bool) {
