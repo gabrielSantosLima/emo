@@ -94,6 +94,10 @@ pub struct Ppu {
     vram_latch: u16,
     vram_read_buffer: u16,
     cgaddr: u8,
+    ophct: u16,
+    opvct: u16,
+    ophct_high: bool,
+    opvct_high: bool,
     cgram_latch: u8,
     cgram_high: bool,
     oamaddr: u16,
@@ -149,6 +153,10 @@ impl Ppu {
             vram_latch: 0,
             vram_read_buffer: 0,
             cgaddr: 0,
+            ophct: 0,
+            opvct: 0,
+            ophct_high: false,
+            opvct_high: false,
             cgram_latch: 0,
             cgram_high: false,
             oamaddr: 0,
@@ -312,8 +320,33 @@ impl Ppu {
                 self.cgaddr = self.cgaddr.wrapping_add(1);
                 value
             }
-            0x213E => 0,
-            0x213F => 0,
+            0x2137 => {
+                self.ophct = ((self.clock % self.timing.line_cycles) / 4) as u16;
+                self.opvct = (self.line_counter % u64::from(self.timing.lines_per_frame)) as u16;
+                self.ophct_high = false;
+                self.opvct_high = false;
+                0
+            }
+            0x213C => {
+                if self.ophct_high {
+                    self.ophct_high = false;
+                    (self.ophct >> 8) as u8
+                } else {
+                    self.ophct_high = true;
+                    self.ophct as u8
+                }
+            }
+            0x213D => {
+                if self.opvct_high {
+                    self.opvct_high = false;
+                    (self.opvct >> 8) as u8
+                } else {
+                    self.opvct_high = true;
+                    self.opvct as u8
+                }
+            }
+            0x213E => 0x01,
+            0x213F => 0x03,
             _ => self.io_latch,
         };
         self.io_latch = value;
@@ -912,6 +945,22 @@ mod tests {
 
         assert_eq!(ppu.read_vram_word(0x4000), 0x1234);
         assert_eq!(ppu.read_vram_word(0x7fff), 0xabcd);
+    }
+
+    #[test]
+    fn slhv_latches_the_h_and_v_counters() {
+        let mut ppu = ppu();
+        let line_cycles = ppu.timing().line_cycles;
+        ppu.advance_to(line_cycles * 10 + 400);
+        ppu.read_register(0x2137);
+
+        let h =
+            u16::from(ppu.read_register(0x213C)) | (u16::from(ppu.read_register(0x213C) & 1) << 8);
+        let v =
+            u16::from(ppu.read_register(0x213D)) | (u16::from(ppu.read_register(0x213D) & 1) << 8);
+
+        assert_eq!(h, 100);
+        assert_eq!(v, 10);
     }
 
     #[test]
