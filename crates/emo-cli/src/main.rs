@@ -56,6 +56,12 @@ enum Command {
         /// Write the mixed stereo audio as raw signed 16-bit little-endian.
         #[arg(long)]
         dump_audio: Option<PathBuf>,
+        /// Write the final 64 KiB of APU RAM to a file.
+        #[arg(long)]
+        dump_aram: Option<PathBuf>,
+        /// Write the recorded SPC700 instructions to a text file.
+        #[arg(long)]
+        dump_spc_trace: Option<PathBuf>,
         /// Print CPU and APU state after the run.
         #[arg(long)]
         debug: bool,
@@ -118,6 +124,8 @@ fn main() -> ExitCode {
             dump_vram,
             dump_wram,
             dump_audio,
+            dump_aram,
+            dump_spc_trace,
             debug,
             spc_trace,
             cpu_trace,
@@ -133,6 +141,8 @@ fn main() -> ExitCode {
             dump_vram.as_ref(),
             dump_wram.as_ref(),
             dump_audio.as_ref(),
+            dump_aram.as_ref(),
+            dump_spc_trace.as_ref(),
             debug,
             spc_trace,
             cpu_trace,
@@ -156,6 +166,8 @@ fn run(
     dump_vram_path: Option<&PathBuf>,
     dump_wram_path: Option<&PathBuf>,
     dump_audio_path: Option<&PathBuf>,
+    dump_aram_path: Option<&PathBuf>,
+    dump_spc_trace_path: Option<&PathBuf>,
     debug: bool,
     spc_trace: usize,
     cpu_trace: usize,
@@ -440,6 +452,35 @@ fn run(
         }
         if let Err(error) = std::fs::write(dump_audio_path, bytes) {
             eprintln!("failed to write {}: {error}", dump_audio_path.display());
+            return ExitCode::FAILURE;
+        }
+    }
+
+    if let Some(dump_aram_path) = dump_aram_path
+        && let Err(error) = std::fs::write(dump_aram_path, machine.memory().apu().aram())
+    {
+        eprintln!("failed to write {}: {error}", dump_aram_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    if let Some(dump_spc_trace_path) = dump_spc_trace_path {
+        let mut text = String::new();
+        for record in machine.memory().apu().spc_trace() {
+            text.push_str(&format!(
+                "{:04x} {:02x} -> {:04x} a={:02x} x={:02x} y={:02x} psw={:02x} sp={:02x}
+",
+                record.pc,
+                record.opcode,
+                record.next_pc,
+                record.a,
+                record.x,
+                record.y,
+                record.psw,
+                record.sp
+            ));
+        }
+        if let Err(error) = std::fs::write(dump_spc_trace_path, text) {
+            eprintln!("failed to write {}: {error}", dump_spc_trace_path.display());
             return ExitCode::FAILURE;
         }
     }

@@ -533,7 +533,6 @@ impl Apu {
             for timer in &mut self.timers {
                 timer.advance(step);
             }
-
             self.sample_accumulator += step as u32;
             while self.sample_accumulator >= 32 {
                 self.sample_accumulator -= 32;
