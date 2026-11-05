@@ -59,8 +59,9 @@ pub struct Registers {
 #[derive(Clone, Copy, Debug)]
 struct Effective {
     addr: u32,
-    /// The index sum crossed a page boundary (read penalty).
-    crossed: bool,
+    /// The indexed read needs the extra cycle: either the index register is
+    /// 16 bits wide or the index sum crossed a page boundary.
+    read_penalty: bool,
     /// Indexed access: writes always pay one extra cycle.
     indexed: bool,
 }
@@ -69,7 +70,7 @@ impl Effective {
     const fn new(bank: u8, addr: u16) -> Self {
         Self {
             addr: (bank as u32) << 16 | addr as u32,
-            crossed: false,
+            read_penalty: false,
             indexed: false,
         }
     }
@@ -358,7 +359,7 @@ impl Cpu {
     /* ---------- Operand reading ---------- */
 
     fn read_m(&mut self, bus: &mut impl Bus, ea: Effective) -> u16 {
-        if ea.crossed {
+        if ea.read_penalty {
             self.idle();
         }
         if self.m8() {
@@ -373,7 +374,7 @@ impl Cpu {
     }
 
     fn read_x(&mut self, bus: &mut impl Bus, ea: Effective) -> u16 {
-        if ea.crossed {
+        if ea.read_penalty {
             self.idle();
         }
         if self.x8() {
@@ -466,25 +467,25 @@ impl Cpu {
         Effective::new(self.dbr, addr)
     }
 
-    fn ea_abs_indexed(&mut self, bus: &mut impl Bus, index: u16) -> Effective {
+    fn ea_abs_indexed(&mut self, bus: &mut impl Bus, index: u16, index16: bool) -> Effective {
         let addr = self.fetch_word(bus);
         let sum = u32::from(addr) + u32::from(index);
         let offset = sum as u16;
         Effective {
             addr: ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff,
-            crossed: (addr & 0xff00) != (offset & 0xff00),
+            read_penalty: index16 || (addr & 0xff00) != (offset & 0xff00),
             indexed: true,
         }
     }
 
     fn ea_abs_x(&mut self, bus: &mut impl Bus) -> Effective {
         let index = self.index(self.x);
-        self.ea_abs_indexed(bus, index)
+        self.ea_abs_indexed(bus, index, !self.x8())
     }
 
     fn ea_abs_y(&mut self, bus: &mut impl Bus) -> Effective {
         let index = self.index(self.y);
-        self.ea_abs_indexed(bus, index)
+        self.ea_abs_indexed(bus, index, !self.x8())
     }
 
     fn ea_long(&mut self, bus: &mut impl Bus) -> Effective {
@@ -500,7 +501,7 @@ impl Cpu {
             (u32::from(bank) << 16 | u32::from(addr)).wrapping_add(u32::from(self.index(self.x)));
         Effective {
             addr: full & 0x00ff_ffff,
-            crossed: false,
+            read_penalty: false,
             indexed: true,
         }
     }
@@ -544,7 +545,7 @@ impl Cpu {
         let sum = u32::from(base) + u32::from(self.index(self.y));
         Effective {
             addr: ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff,
-            crossed: (base & 0xff00) != ((sum as u16) & 0xff00),
+            read_penalty: (base & 0xff00) != ((sum as u16) & 0xff00),
             indexed: true,
         }
     }
@@ -560,7 +561,7 @@ impl Cpu {
             .wrapping_add(u32::from(self.index(self.y)));
         Effective {
             addr: full & 0x00ff_ffff,
-            crossed: false,
+            read_penalty: false,
             indexed: true,
         }
     }
@@ -582,7 +583,7 @@ impl Cpu {
         let sum = u32::from(base) + u32::from(self.index(self.y));
         Effective {
             addr: ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff,
-            crossed: false,
+            read_penalty: false,
             indexed: true,
         }
     }
@@ -2346,6 +2347,80 @@ mod tests {
         for _ in 0..steps {
             cpu.step(bus);
         }
+    }
+
+    #[test]
+    fn absolute_indexed_read_pays_a_cycle_for_a_16_bit_index() {
+        let mut bus = FlatMemory::new();
+        // LDA $00F0,X with X = $0020: the low bytes ($F0 + $20) cross a page.
+        bus.load(&[0xbd, 0xf0, 0x00]);
+        let mut cpu = native_cpu(FLAG_I | FLAG_M);
+        cpu.set_registers(Registers {
+            x: 0x0020,
+            pc: 0,
+            pbr: 0,
+            dbr: 0,
+            p: FLAG_I | FLAG_M,
+            s: 0x01ff,
+            ..cpu.registers()
+        });
+        cpu.set_cycles(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.cycles(), 5);
+
+        // X = $0010 keeps both bytes inside page $00, but the 16-bit index
+        // register still costs the extra cycle.
+        let mut bus = FlatMemory::new();
+        bus.load(&[0xbd, 0xf0, 0x00]);
+        let mut cpu = native_cpu(FLAG_I | FLAG_M);
+        cpu.set_registers(Registers {
+            x: 0x0010,
+            pc: 0,
+            pbr: 0,
+            dbr: 0,
+            p: FLAG_I | FLAG_M,
+            s: 0x01ff,
+            ..cpu.registers()
+        });
+        cpu.set_cycles(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.cycles(), 5);
+    }
+
+    #[test]
+    fn eight_bit_index_only_pays_on_a_page_cross() {
+        let mut bus = FlatMemory::new();
+        // LDA $00F0,X with 8-bit X = $0F: no page cross, 4 cycles.
+        bus.load(&[0xbd, 0xf0, 0x00]);
+        let mut cpu = native_cpu(FLAG_I | FLAG_X | FLAG_M);
+        cpu.set_registers(Registers {
+            x: 0x000f,
+            pc: 0,
+            pbr: 0,
+            dbr: 0,
+            p: FLAG_I | FLAG_X | FLAG_M,
+            s: 0x01ff,
+            ..cpu.registers()
+        });
+        cpu.set_cycles(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.cycles(), 4);
+
+        let mut bus = FlatMemory::new();
+        bus.load(&[0xbd, 0xf0, 0x00]);
+        let mut cpu = native_cpu(FLAG_I | FLAG_X | FLAG_M);
+        cpu.set_registers(Registers {
+            x: 0x0020,
+            pc: 0,
+            pbr: 0,
+            dbr: 0,
+            p: FLAG_I | FLAG_X | FLAG_M,
+            s: 0x01ff,
+            ..cpu.registers()
+        });
+        cpu.set_cycles(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.cycles(), 5);
     }
 
     #[test]
