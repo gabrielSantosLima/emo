@@ -59,6 +59,9 @@ pub struct Registers {
 #[derive(Clone, Copy, Debug)]
 struct Effective {
     addr: u32,
+    /// Address of the high byte of a 16-bit access. Absolute accesses carry
+    /// into the next bank; direct-page accesses wrap inside bank 0.
+    high: u32,
     /// The indexed read needs the extra cycle: either the index register is
     /// 16 bits wide or the index sum crossed a page boundary.
     read_penalty: bool,
@@ -68,8 +71,20 @@ struct Effective {
 
 impl Effective {
     const fn new(bank: u8, addr: u16) -> Self {
+        let full = (bank as u32) << 16 | addr as u32;
         Self {
-            addr: (bank as u32) << 16 | addr as u32,
+            addr: full,
+            high: (full + 1) & 0x00ff_ffff,
+            read_penalty: false,
+            indexed: false,
+        }
+    }
+
+    /// Direct-page access: always bank 0, and a 16-bit access wraps at `$FFFF`.
+    const fn direct(addr: u16) -> Self {
+        Self {
+            addr: addr as u32,
+            high: addr.wrapping_add(1) as u32,
             read_penalty: false,
             indexed: false,
         }
@@ -365,8 +380,10 @@ impl Cpu {
         if self.m8() {
             u16::from(self.read(bus, ea.bank(), ea.offset()))
         } else {
+            // A 16-bit access keeps the bank and wraps the offset, it does not
+            // carry into the next bank.
             let low = ea.addr;
-            let high = (ea.addr + 1) & 0x00ff_ffff;
+            let high = ea.high;
             let lo = u16::from(self.read(bus, (low >> 16) as u8, low as u16));
             let hi = u16::from(self.read(bus, (high >> 16) as u8, high as u16));
             lo | hi << 8
@@ -381,7 +398,7 @@ impl Cpu {
             u16::from(self.read(bus, ea.bank(), ea.offset()))
         } else {
             let low = ea.addr;
-            let high = (ea.addr + 1) & 0x00ff_ffff;
+            let high = ea.high;
             let lo = u16::from(self.read(bus, (low >> 16) as u8, low as u16));
             let hi = u16::from(self.read(bus, (high >> 16) as u8, high as u16));
             lo | hi << 8
@@ -394,8 +411,12 @@ impl Cpu {
         }
         self.write(bus, ea.bank(), ea.offset(), value as u8);
         if !self.m8() {
-            let high = (ea.addr + 1) & 0x00ff_ffff;
-            self.write(bus, (high >> 16) as u8, high as u16, (value >> 8) as u8);
+            self.write(
+                bus,
+                (ea.high >> 16) as u8,
+                ea.high as u16,
+                (value >> 8) as u8,
+            );
         }
     }
 
@@ -429,7 +450,10 @@ impl Cpu {
     /* ---------- Addressing modes ---------- */
 
     fn dp_index(&self, offset: u16, index: u16) -> u16 {
-        if self.d & 0x00ff == 0 {
+        // In native mode the 65816 adds the full 16-bit index to the direct
+        // page address (fullsnes: `[D+nn+X]`). In emulation mode it keeps the
+        // 6502 behaviour and wraps inside the direct page.
+        if self.e && self.d & 0x00ff == 0 {
             self.d.wrapping_add(offset.wrapping_add(index) & 0x00ff)
         } else {
             self.d.wrapping_add(offset).wrapping_add(index)
@@ -445,21 +469,21 @@ impl Cpu {
     fn ea_dir(&mut self, bus: &mut impl Bus) -> Effective {
         let offset = u16::from(self.fetch_byte(bus));
         self.dp_penalty();
-        Effective::new(0, self.d.wrapping_add(offset))
+        Effective::direct(self.d.wrapping_add(offset))
     }
 
     fn ea_dir_x(&mut self, bus: &mut impl Bus) -> Effective {
         let offset = u16::from(self.fetch_byte(bus));
         self.dp_penalty();
         self.idle();
-        Effective::new(0, self.dp_index(offset, self.index(self.x)))
+        Effective::direct(self.dp_index(offset, self.index(self.x)))
     }
 
     fn ea_dir_y(&mut self, bus: &mut impl Bus) -> Effective {
         let offset = u16::from(self.fetch_byte(bus));
         self.dp_penalty();
         self.idle();
-        Effective::new(0, self.dp_index(offset, self.index(self.y)))
+        Effective::direct(self.dp_index(offset, self.index(self.y)))
     }
 
     fn ea_abs(&mut self, bus: &mut impl Bus) -> Effective {
@@ -471,8 +495,10 @@ impl Cpu {
         let addr = self.fetch_word(bus);
         let sum = u32::from(addr) + u32::from(index);
         let offset = sum as u16;
+        let full = ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff;
         Effective {
-            addr: ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff,
+            addr: full,
+            high: (full + 1) & 0x00ff_ffff,
             read_penalty: index16 || (addr & 0xff00) != (offset & 0xff00),
             indexed: true,
         }
@@ -501,6 +527,7 @@ impl Cpu {
             (u32::from(bank) << 16 | u32::from(addr)).wrapping_add(u32::from(self.index(self.x)));
         Effective {
             addr: full & 0x00ff_ffff,
+            high: (full + 1) & 0x00ff_ffff,
             read_penalty: false,
             indexed: true,
         }
@@ -543,9 +570,12 @@ impl Cpu {
         let hi = u16::from(self.read(bus, 0, pointer.wrapping_add(1)));
         let base = lo | hi << 8;
         let sum = u32::from(base) + u32::from(self.index(self.y));
+        let full = ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff;
         Effective {
-            addr: ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff,
-            read_penalty: (base & 0xff00) != ((sum as u16) & 0xff00),
+            addr: full,
+            high: (full + 1) & 0x00ff_ffff,
+            // A 16-bit index always pays the cycle, like `abs,Y`.
+            read_penalty: !self.x8() || (base & 0xff00) != ((sum as u16) & 0xff00),
             indexed: true,
         }
     }
@@ -561,6 +591,7 @@ impl Cpu {
             .wrapping_add(u32::from(self.index(self.y)));
         Effective {
             addr: full & 0x00ff_ffff,
+            high: (full + 1) & 0x00ff_ffff,
             read_penalty: false,
             indexed: true,
         }
@@ -569,7 +600,7 @@ impl Cpu {
     fn ea_sr(&mut self, bus: &mut impl Bus) -> Effective {
         let offset = u16::from(self.fetch_byte(bus));
         self.idle();
-        Effective::new(0, self.s.wrapping_add(offset))
+        Effective::direct(self.s.wrapping_add(offset))
     }
 
     fn ea_sr_ind_y(&mut self, bus: &mut impl Bus) -> Effective {
@@ -581,9 +612,11 @@ impl Cpu {
         let hi = u16::from(self.read(bus, 0, pointer.wrapping_add(1)));
         let base = lo | hi << 8;
         let sum = u32::from(base) + u32::from(self.index(self.y));
+        let full = ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff;
         Effective {
-            addr: ((u32::from(self.dbr) << 16).wrapping_add(sum)) & 0x00ff_ffff,
-            read_penalty: false,
+            addr: full,
+            high: (full + 1) & 0x00ff_ffff,
+            read_penalty: !self.x8(),
             indexed: true,
         }
     }
@@ -2539,5 +2572,115 @@ mod tests {
         cpu.step(&mut bus);
 
         assert_eq!(bus.read(0, 0x01fd), FLAG_I | FLAG_M);
+    }
+}
+
+#[cfg(test)]
+mod debug_case {
+    use super::*;
+    use crate::bus::FlatMemory;
+
+    #[test]
+    fn reproduce_cmp_dp_x_case() {
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0x0000, 0xd5);
+        bus.write(0, 0x0001, 0xfd);
+        bus.write(0, 0x8dea, 0x56);
+        bus.write(0, 0x8deb, 0xc7);
+        let mut cpu = Cpu::new();
+        cpu.set_registers(Registers {
+            a: 0xc025,
+            x: 0xd96a,
+            y: 0,
+            s: 0x01ff,
+            d: 0xb383,
+            pc: 0,
+            pbr: 0,
+            dbr: 0,
+            p: 0xcc,
+            e: false,
+        });
+        cpu.step(&mut bus);
+        eprintln!("p={:02x} a={:04x}", cpu.registers().p, cpu.registers().a);
+    }
+}
+
+#[cfg(test)]
+mod addressing_tests {
+    use super::*;
+    use crate::bus::FlatMemory;
+
+    fn cpu_with(p: u8, e: bool, d: u16, x: u16, y: u16, dbr: u8) -> Cpu {
+        let mut cpu = Cpu::new();
+        cpu.set_registers(Registers {
+            a: 0,
+            x,
+            y,
+            s: 0x01ff,
+            d,
+            pc: 0,
+            pbr: 0,
+            dbr,
+            p,
+            e,
+        });
+        cpu
+    }
+
+    #[test]
+    fn native_direct_page_index_does_not_wrap_at_the_page() {
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0x0000, 0xb5); // LDA $DB,X
+        bus.write(0, 0x0001, 0xdb);
+        bus.write(0, 0x4333, 0x99); // wrapped target
+        bus.write(0, 0x4433, 0x42); // full 16-bit sum
+
+        let mut cpu = cpu_with(0x30, false, 0x4300, 0x0058, 0, 0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.registers().a, 0x42);
+    }
+
+    #[test]
+    fn emulation_direct_page_index_wraps_at_the_page() {
+        let mut cpu = cpu_with(FLAG_M | FLAG_X | FLAG_I, true, 0x4300, 0x0058, 0, 0);
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0x0000, 0xb5);
+        bus.write(0, 0x0001, 0xdb);
+        bus.write(0, 0x4333, 0x99);
+        bus.write(0, 0x4433, 0x42);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.registers().a, 0x99);
+    }
+
+    #[test]
+    fn absolute_sixteen_bit_read_carries_into_the_next_bank() {
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0x0000, 0xbd); // LDA $FF40,X (16-bit accumulator)
+        bus.write(0, 0x0001, 0x40);
+        bus.write(0, 0x0002, 0xff);
+        bus.write(0x33, 0xffff, 0x52);
+        bus.write(0x34, 0x0000, 0x3f);
+
+        let mut cpu = cpu_with(0, false, 0, 0x00bf, 0, 0x33);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.registers().a, 0x3f52);
+    }
+
+    #[test]
+    fn direct_page_sixteen_bit_read_wraps_inside_bank_zero() {
+        let mut bus = FlatMemory::new();
+        bus.write(0, 0x0010, 0xa5); // LDA $07 (dp = $FFF8)
+        bus.write(0, 0x0011, 0x07);
+        bus.write(0, 0xffff, 0x52);
+        bus.write(0, 0x0000, 0x3f); // high byte wraps to the start of bank 0
+
+        let mut cpu = cpu_with(0, false, 0xfff8, 0, 0, 0);
+        cpu.set_registers(Registers {
+            pc: 0x0010,
+            ..cpu.registers()
+        });
+        cpu.step(&mut bus);
+        assert_eq!(cpu.registers().a, 0x3f52);
     }
 }
