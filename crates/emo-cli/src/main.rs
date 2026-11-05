@@ -284,10 +284,14 @@ fn run(
             apu.spc().psw
         );
         println!(
-            "nmitimen={:02x} inidisp={:02x} tm={:02x} vblank={} nmi={}",
+            "nmitimen={:02x} inidisp={:02x} tm={:02x} htime={} vtime={} irq={} line={} vblank={} nmi={}",
             machine.memory().nmitimen(),
             machine.memory().ppu().display_control(),
             machine.memory().ppu().main_screen(),
+            machine.memory().htime(),
+            machine.memory().vtime(),
+            machine.memory().irq_pending(),
+            machine.memory().ppu().line_counter(),
             machine.memory().ppu().in_vblank(),
             machine.memory().ppu().nmi_pending()
         );

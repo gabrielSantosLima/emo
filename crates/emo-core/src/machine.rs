@@ -132,6 +132,7 @@ pub struct Machine {
     last_clock: u64,
     trace: VecDeque<CpuTrace>,
     trace_limit: usize,
+    h_irq_line: u64,
 }
 
 impl Machine {
@@ -155,6 +156,7 @@ impl Machine {
             last_clock: 0,
             trace: VecDeque::new(),
             trace_limit: 0,
+            h_irq_line: u64::MAX,
         };
         machine.reset();
 
@@ -221,6 +223,7 @@ impl Machine {
         loop {
             self.memory.ppu_mut().advance_to(self.clock);
             self.run_hdma();
+            self.check_h_irq();
 
             // The NMI is raised by `advance_to` when the PPU crosses the
             // vblank line. Take it before the frame boundary can break the
@@ -232,6 +235,8 @@ impl Machine {
                     self.cpu.set_nmi(true);
                 }
             }
+
+            self.cpu.set_irq(self.memory.irq_pending());
 
             let delta = self.clock - self.last_clock;
             if delta > 0 {
@@ -303,9 +308,32 @@ impl Machine {
             if within < visible {
                 self.memory.run_hdma_line(within as u16);
             }
+            if self.memory.v_irq_enabled() && within == u64::from(self.memory.vtime()) {
+                self.memory.raise_irq();
+            }
         }
 
         self.clock += self.memory.take_pending_cycles();
+    }
+
+    /// Fire the H-counter IRQ when the current dot passes `$4207/$4208`.
+    fn check_h_irq(&mut self) {
+        if !self.memory.h_irq_enabled() {
+            return;
+        }
+        let timing = self.memory.ppu().timing();
+        let line_cycles = timing.line_cycles;
+        let line = self.clock / line_cycles;
+        let dot = self.clock % line_cycles;
+        if self.memory.irq_mode() == 3
+            && (line % u64::from(timing.lines_per_frame)) != u64::from(self.memory.vtime())
+        {
+            return;
+        }
+        if dot >= u64::from(self.memory.htime()) && self.h_irq_line != line {
+            self.h_irq_line = line;
+            self.memory.raise_irq();
+        }
     }
 
     /// Record the last `limit` CPU instructions.

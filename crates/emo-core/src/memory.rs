@@ -33,6 +33,9 @@ pub struct Memory {
     pending_cycles: u64,
     open_bus: u8,
     wram_addr: u32,
+    htime: u16,
+    vtime: u16,
+    irq_flag: bool,
     buttons: [u16; 4],
     joy_latch: [u16; 4],
     manual_shift: [u16; 2],
@@ -61,6 +64,9 @@ impl Memory {
             pending_cycles: 0,
             open_bus: 0,
             wram_addr: 0,
+            htime: 0,
+            vtime: 0,
+            irq_flag: false,
             buttons: [0; 4],
             joy_latch: [0; 4],
             manual_shift: [0; 2],
@@ -101,6 +107,49 @@ impl Memory {
     #[must_use]
     pub const fn nmi_enabled(&self) -> bool {
         self.nmitimen & 0x80 != 0
+    }
+
+    /// H/V IRQ mode from `$4200` bits 5-4.
+    ///
+    /// 0 = off, 1 = H=HTIME (any V), 2 = V=VTIME (H=0), 3 = both match.
+    #[must_use]
+    pub const fn irq_mode(&self) -> u8 {
+        (self.nmitimen >> 4) & 0x03
+    }
+
+    /// True when the V-counter IRQ is selected.
+    #[must_use]
+    pub const fn v_irq_enabled(&self) -> bool {
+        matches!(self.irq_mode(), 2 | 3)
+    }
+
+    /// True when the H-counter IRQ is selected.
+    #[must_use]
+    pub const fn h_irq_enabled(&self) -> bool {
+        matches!(self.irq_mode(), 1 | 3)
+    }
+
+    /// Target scanline for the V-counter IRQ (`$4209/$420A`).
+    #[must_use]
+    pub const fn vtime(&self) -> u16 {
+        self.vtime
+    }
+
+    /// Target dot for the H-counter IRQ (`$4207/$4208`).
+    #[must_use]
+    pub const fn htime(&self) -> u16 {
+        self.htime
+    }
+
+    /// True while an H/V IRQ is pending.
+    #[must_use]
+    pub const fn irq_pending(&self) -> bool {
+        self.irq_flag
+    }
+
+    /// Raise the H/V IRQ line.
+    pub fn raise_irq(&mut self) {
+        self.irq_flag = true;
     }
 
     /// Set the pressed buttons for a controller port (active high).
@@ -380,16 +429,21 @@ impl Memory {
                     return Some(value);
                 }
                 0x2181..=0x2183 => return Some(0),
+                0x4211 => {
+                    let flag = self.irq_flag;
+                    self.irq_flag = false;
+                    return Some(u8::from(flag) << 7);
+                }
                 0x4210 => {
                     let flag = self.take_nmi_flag();
                     return Some(u8::from(flag) << 7 | 0x02);
                 }
-                0x4211 => return Some(0),
                 0x4212 => {
                     let vblank = self.ppu.in_vblank();
+                    let hblank = self.ppu.in_hblank();
                     // Bit 0 is the auto-joypad busy flag. The latch completes
                     // as soon as vblank starts, so it is never busy here.
-                    return Some(u8::from(vblank) << 7);
+                    return Some((u8::from(vblank) << 7) | (u8::from(hblank) << 6));
                 }
                 0x4016 => return Some(self.read_manual_joypad(0)),
                 0x4017 => return Some(self.read_manual_joypad(1)),
@@ -469,6 +523,22 @@ impl Memory {
                 }
                 0x4200 => {
                     self.nmitimen = value;
+                    return true;
+                }
+                0x4207 => {
+                    self.htime = (self.htime & 0xff00) | u16::from(value);
+                    return true;
+                }
+                0x4208 => {
+                    self.htime = (self.htime & 0x00ff) | ((u16::from(value) & 1) << 8);
+                    return true;
+                }
+                0x4209 => {
+                    self.vtime = (self.vtime & 0xff00) | u16::from(value);
+                    return true;
+                }
+                0x420A => {
+                    self.vtime = (self.vtime & 0x00ff) | ((u16::from(value) & 1) << 8);
                     return true;
                 }
                 0x4016 => {
@@ -604,6 +674,39 @@ mod tests {
         memory.cartridge_mut().load_sram(&[0x11, 0x22]);
         assert_eq!(memory.cartridge().sram()[0], 0x11);
         assert_eq!(memory.cartridge().sram()[1], 0x22);
+    }
+
+    #[test]
+    fn irq_mode_selects_h_v_or_both() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+
+        memory.write(0x00, 0x4200, 0x10);
+        assert_eq!(memory.irq_mode(), 1);
+        assert!(memory.h_irq_enabled());
+        assert!(!memory.v_irq_enabled());
+
+        memory.write(0x00, 0x4200, 0x20);
+        assert_eq!(memory.irq_mode(), 2);
+        assert!(!memory.h_irq_enabled());
+        assert!(memory.v_irq_enabled());
+
+        memory.write(0x00, 0x4200, 0x30);
+        assert_eq!(memory.irq_mode(), 3);
+        assert!(memory.h_irq_enabled());
+        assert!(memory.v_irq_enabled());
+
+        memory.write(0x00, 0x4200, 0x00);
+        assert_eq!(memory.irq_mode(), 0);
+    }
+
+    #[test]
+    fn reading_timeup_acknowledges_the_irq() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+        memory.raise_irq();
+        assert!(memory.irq_pending());
+
+        assert_eq!(memory.read(0x00, 0x4211), 0x80);
+        assert!(!memory.irq_pending());
     }
 
     #[test]

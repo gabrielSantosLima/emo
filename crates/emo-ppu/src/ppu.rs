@@ -99,6 +99,7 @@ pub struct Ppu {
     oamaddr: u16,
 
     line_counter: u64,
+    clock: u64,
     frame_ready: bool,
     nmi: bool,
     io_latch: u8,
@@ -153,6 +154,7 @@ impl Ppu {
             oamaddr: 0,
 
             line_counter: 0,
+            clock: 0,
             frame_ready: false,
             nmi: false,
             io_latch: 0,
@@ -192,6 +194,7 @@ impl Ppu {
     /// Reset timing while keeping memory and registers.
     pub fn reset_timing(&mut self) {
         self.line_counter = 0;
+        self.clock = 0;
         self.frame_ready = false;
         self.nmi = false;
     }
@@ -219,6 +222,15 @@ impl Ppu {
     pub fn in_vblank(&self) -> bool {
         let line = (self.line_counter % u64::from(self.timing.lines_per_frame)) as u16;
         line >= self.timing.vblank_line
+    }
+
+    /// True while the PPU is in horizontal blanking.
+    ///
+    /// The renderer works per scanline, so the last 340 master cycles of the
+    /// line are treated as HBlank (the visible width is 256 pixels).
+    #[must_use]
+    pub fn in_hblank(&self) -> bool {
+        (self.clock % self.timing.line_cycles) >= 1024
     }
 
     /// Clear the frame-complete flag after the frontend consumed the frame.
@@ -253,6 +265,7 @@ impl Ppu {
 
     /// Render every scanline up to `clock` (absolute master cycles).
     pub fn advance_to(&mut self, clock: u64) {
+        self.clock = clock;
         let line_cycles = self.timing.line_cycles;
         let lines = u64::from(self.timing.lines_per_frame);
         let target = clock / line_cycles;
@@ -899,6 +912,18 @@ mod tests {
 
         assert_eq!(ppu.read_vram_word(0x4000), 0x1234);
         assert_eq!(ppu.read_vram_word(0x7fff), 0xabcd);
+    }
+
+    #[test]
+    fn hblank_is_reported_after_the_visible_pixels() {
+        let mut ppu = ppu();
+        let line_cycles = ppu.timing().line_cycles;
+
+        ppu.advance_to(line_cycles / 2);
+        assert!(!ppu.in_hblank());
+
+        ppu.advance_to(line_cycles - 1);
+        assert!(ppu.in_hblank());
     }
 
     #[test]
