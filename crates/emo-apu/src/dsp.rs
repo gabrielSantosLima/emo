@@ -336,7 +336,18 @@ impl Dsp {
                     -0x8000
                 }
             } else {
-                i32::from(self.voices[voice].buffer[self.voices[voice].index.min(15)])
+                // Linear interpolation between the two nearest decoded samples.
+                // The hardware uses a gaussian filter here; linear removes the
+                // worst of the zipper noise without the full table.
+                let index = self.voices[voice].index.min(15);
+                let sample = i32::from(self.voices[voice].buffer[index]);
+                if index < 15 {
+                    let next = i32::from(self.voices[voice].buffer[index + 1]);
+                    let fraction = i32::from(self.voices[voice].position as u16) >> 4;
+                    sample + (((next - sample) * fraction) >> 8)
+                } else {
+                    sample
+                }
             };
 
             let envelope = self.voices[voice].envelope;

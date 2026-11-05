@@ -229,8 +229,12 @@ impl Audio {
                         Ok(queue) => queue,
                         Err(_) => return,
                     };
+                    let mut last = 0.0;
                     for sample in data.iter_mut() {
-                        *sample = queue.pop_front().unwrap_or(0.0);
+                        if let Some(value) = queue.pop_front() {
+                            last = value;
+                        }
+                        *sample = last;
                     }
                 },
                 error,
@@ -243,8 +247,12 @@ impl Audio {
                         Ok(queue) => queue,
                         Err(_) => return,
                     };
+                    let mut last = 0.0;
                     for sample in data.iter_mut() {
-                        *sample = (queue.pop_front().unwrap_or(0.0) * f32::from(i16::MAX)) as i16;
+                        if let Some(value) = queue.pop_front() {
+                            last = value;
+                        }
+                        *sample = (last * f32::from(i16::MAX)) as i16;
                     }
                 },
                 error,
@@ -257,9 +265,12 @@ impl Audio {
                         Ok(queue) => queue,
                         Err(_) => return,
                     };
+                    let mut last = 0.0;
                     for sample in data.iter_mut() {
-                        let value = queue.pop_front().unwrap_or(0.0);
-                        *sample = ((value * 0.5 + 0.5) * f32::from(u16::MAX)) as u16;
+                        if let Some(value) = queue.pop_front() {
+                            last = value;
+                        }
+                        *sample = ((last * 0.5 + 0.5) * f32::from(u16::MAX)) as u16;
                     }
                 },
                 error,
@@ -288,7 +299,7 @@ impl Audio {
             return;
         }
         let step = AUDIO_RATE as f32 / self.rate as f32;
-        let capacity = self.rate as usize / 2;
+        let capacity = self.rate as usize;
         while queue.len() > capacity {
             queue.pop_front();
         }
@@ -535,6 +546,13 @@ impl ApplicationHandler for App {
         };
 
         self.audio = Audio::new();
+        if let Some(audio) = &self.audio
+            && let Ok(mut queue) = audio.buffer.lock()
+        {
+            // Two frames of lead-in keep the callback from starving while the
+            // window loop is still settling.
+            queue.extend(std::iter::repeat_n(0.0, (audio.rate / 30) as usize));
+        }
         if self.audio.is_none() {
             eprintln!("no audio output device; running without sound");
         }
