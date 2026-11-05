@@ -1866,9 +1866,12 @@ impl Cpu {
 
     fn compare(&mut self, register: u16, value: u16, mask: u16) {
         let diff = register.wrapping_sub(value) & mask;
+        // The negative flag comes from the sign bit of the active width, not
+        // from bit 7 of the low byte in 16-bit mode.
+        let sign = if mask == 0x00ff { 0x0080 } else { 0x8000 };
         self.set_flag(FLAG_C, register & mask >= value & mask);
         self.set_flag(FLAG_Z, diff == 0);
-        self.set_flag(FLAG_N, diff & (mask & 0x8000 | 0x80) != 0);
+        self.set_flag(FLAG_N, diff & sign != 0);
     }
 
     fn op_adc(&mut self, bus: &mut impl Bus, ea: Effective) {
@@ -2347,6 +2350,33 @@ mod tests {
         for _ in 0..steps {
             cpu.step(bus);
         }
+    }
+
+    #[test]
+    fn sixteen_bit_compare_takes_n_from_bit_15() {
+        let mut cpu = native_cpu(FLAG_I);
+        let mut bus = FlatMemory::new();
+        // LDA #$00E8 ; CMP #$000F -> $00D9, bit 7 set but bit 15 clear.
+        bus.load(&[0xa9, 0xe8, 0x00, 0xc9, 0x0f, 0x00]);
+        run(&mut cpu, &mut bus, 2);
+
+        assert!(!cpu.registers().p & FLAG_N != 0);
+        assert!(!cpu.registers().p & FLAG_Z != 0);
+        assert!(cpu.registers().p & FLAG_C != 0);
+
+        // LDA #$8000 ; CMP #$0001 -> $7FFF, bit 15 clear.
+        let mut cpu = native_cpu(FLAG_I);
+        let mut bus = FlatMemory::new();
+        bus.load(&[0xa9, 0x00, 0x80, 0xc9, 0x01, 0x00]);
+        run(&mut cpu, &mut bus, 2);
+        assert!(!cpu.registers().p & FLAG_N != 0);
+
+        // LDA #$0001 ; CMP #$8000 -> $8001, bit 15 set.
+        let mut cpu = native_cpu(FLAG_I);
+        let mut bus = FlatMemory::new();
+        bus.load(&[0xa9, 0x01, 0x00, 0xc9, 0x00, 0x80]);
+        run(&mut cpu, &mut bus, 2);
+        assert!(cpu.registers().p & FLAG_N != 0);
     }
 
     #[test]
