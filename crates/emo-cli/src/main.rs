@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use emo_core::{Cartridge, Machine, VideoStandard};
 
+mod spc_vectors;
 mod vectors;
 
 /// Top-level command-line interface.
@@ -88,6 +89,11 @@ enum Command {
         /// A vector JSON file or a directory of vector files.
         path: PathBuf,
     },
+    /// Run SingleStepTests/spc700 vectors against the SPC700 core.
+    VerifySpc {
+        /// A vector JSON file or a directory of vector files.
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -114,6 +120,7 @@ fn main() -> ExitCode {
             print!("{}", timing_report(standard.into()));
             ExitCode::SUCCESS
         }
+        Command::VerifySpc { path } => verify_spc(&path),
         Command::Run {
             rom,
             frames,
@@ -345,6 +352,21 @@ fn run(
                 ppu.display_control(),
                 ppu.obsel(),
                 ppu.vmain()
+            );
+        }
+        {
+            let dsp = apu.dsp();
+            let dir = usize::from(dsp.register(0x5D)) << 8;
+            let aram = apu.aram();
+            println!(
+                "dsp dir={:02x} flg={:02x} mvol={:02x}/{:02x} evol={:02x}/{:02x} entries={:02x?}",
+                dsp.register(0x5D),
+                dsp.register(0x6C),
+                dsp.register(0x0C),
+                dsp.register(0x1C),
+                dsp.register(0x2C),
+                dsp.register(0x3C),
+                &aram[dir..dir + 24]
             );
         }
         println!("port writes: {:02x?}", apu.port_trace());
@@ -677,6 +699,48 @@ fn timing_report(standard: VideoStandard) -> String {
         report.push_str(&format!("  {name:<20}{value}\n"));
     }
     report
+}
+
+fn verify_spc(path: &PathBuf) -> ExitCode {
+    let files = match vector_files(path) {
+        Ok(files) => files,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut total = spc_vectors::Report::default();
+    for file in files {
+        match spc_vectors::run_file(&file) {
+            Ok(report) => {
+                if report.failed > 0 {
+                    println!(
+                        "{}: {}/{} passed, {} failed",
+                        file.file_name().unwrap_or_default().to_string_lossy(),
+                        report.passed,
+                        report.passed + report.failed,
+                        report.failed
+                    );
+                    for failure in &report.failures {
+                        println!("  {failure}");
+                    }
+                }
+                total.merge(report);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    println!("total: {} passed, {} failed", total.passed, total.failed);
+    if total.failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 fn button_mask(name: &str) -> Option<u16> {

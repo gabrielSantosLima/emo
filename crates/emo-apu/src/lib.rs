@@ -825,12 +825,12 @@ mod tests {
         let mut apu = Apu::new();
         apu.spc_write(0x1418, 0x10);
         // MOV1 C,$1418.4 ; MOV X,#0
-        run_program(&mut apu, &[0xAA, 0x18, 0x14, 0x04, 0xCD, 0x00]);
+        run_program(&mut apu, &[0xAA, 0x18, 0x94, 0xCD, 0x00]);
         apu.spc_step();
         assert_eq!(apu.spc().psw & 0x01, 1, "carry should mirror the bit");
 
         // MOV1 $1418.4,C with C=1 sets the bit.
-        run_program(&mut apu, &[0xCA, 0x18, 0x14, 0x04]);
+        run_program(&mut apu, &[0xCA, 0x18, 0x94]);
         apu.spc_mut().psw |= 0x01;
         apu.spc_step();
         assert_eq!(apu.aram()[0x1418] & 0x10, 0x10);

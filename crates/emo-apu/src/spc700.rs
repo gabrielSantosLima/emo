@@ -163,26 +163,27 @@ impl Spc700 {
         self.dp_base() + u16::from(self.y)
     }
 
+    /// Read a 16-bit pointer from the direct page. The high byte wraps inside
+    /// the current direct page (Anomie: "direct page accesses will wrap within
+    /// the direct page").
+    fn read_pointer_dp(&mut self, bus: &mut impl ApuBus, pointer: u16) -> u16 {
+        let high = (pointer & 0xFF00) | ((pointer + 1) & 0x00FF);
+        u16::from(self.read(bus, pointer)) | (u16::from(self.read(bus, high)) << 8)
+    }
+
     fn dp_x_ptr(&mut self, bus: &mut impl ApuBus) -> u16 {
         let pointer = self.addr_dp_x(bus);
-        u16::from(self.read(bus, pointer))
-            | (u16::from(self.read(bus, pointer.wrapping_add(1))) << 8)
+        self.read_pointer_dp(bus, pointer)
     }
 
     fn dp_y_ptr(&mut self, bus: &mut impl ApuBus) -> u16 {
         let pointer = self.addr_dp(bus);
-        let base = u16::from(self.read(bus, pointer))
-            | (u16::from(self.read(bus, pointer.wrapping_add(1))) << 8);
+        let base = self.read_pointer_dp(bus, pointer);
         base.wrapping_add(u16::from(self.y))
     }
 
     fn read_word(&mut self, bus: &mut impl ApuBus, addr: u16) -> u16 {
         u16::from(self.read(bus, addr)) | (u16::from(self.read(bus, addr.wrapping_add(1))) << 8)
-    }
-
-    fn write_word(&mut self, bus: &mut impl ApuBus, addr: u16, value: u16) {
-        self.write(bus, addr, value as u8);
-        self.write(bus, addr.wrapping_add(1), (value >> 8) as u8);
     }
 
     fn push(&mut self, bus: &mut impl ApuBus, value: u8) {
@@ -214,6 +215,28 @@ impl Spc700 {
         self.set_flag(PSW_Z, value == 0);
     }
 
+    fn set_nz16(&mut self, value: u16) {
+        self.set_flag(PSW_N, value & 0x8000 != 0);
+        self.set_flag(PSW_Z, value == 0);
+    }
+
+    /// Read a word from the direct page, wrapping inside the page.
+    fn read_word_dp(&mut self, bus: &mut impl ApuBus, addr: u16) -> u16 {
+        let low = u16::from(self.read(bus, addr));
+        let high = u16::from(self.read(bus, (addr & 0xFF00) | ((addr + 1) & 0x00FF)));
+        low | high << 8
+    }
+
+    /// Write a word to the direct page, wrapping inside the page.
+    fn write_word_dp(&mut self, bus: &mut impl ApuBus, addr: u16, value: u16) {
+        self.write(bus, addr, value as u8);
+        self.write(
+            bus,
+            (addr & 0xFF00) | ((addr + 1) & 0x00FF),
+            (value >> 8) as u8,
+        );
+    }
+
     fn ya(&self) -> u16 {
         u16::from(self.a) | (u16::from(self.y) << 8)
     }
@@ -221,7 +244,7 @@ impl Spc700 {
     fn set_ya(&mut self, value: u16) {
         self.a = value as u8;
         self.y = (value >> 8) as u8;
-        self.set_nz(self.y);
+        self.set_nz16(value);
     }
 
     /* ---------- Operations ---------- */
@@ -244,7 +267,7 @@ impl Spc700 {
                     .wrapping_sub(u16::from(right))
                     .wrapping_sub(borrow);
                 let result = diff as u8;
-                self.set_flag(PSW_H, (left & 0x0F) < (right & 0x0F) + borrow as u8);
+                self.set_flag(PSW_H, (left & 0x0F) >= (right & 0x0F) + borrow as u8);
                 self.set_flag(PSW_V, ((left ^ right) & (left ^ result) & 0x80) != 0);
                 self.set_flag(PSW_C, u16::from(left) >= u16::from(right) + borrow);
                 self.set_nz(result);
@@ -364,8 +387,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(0);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0x04 => {
                 let addr = self.addr_dp(bus);
@@ -411,18 +433,20 @@ impl Spc700 {
                 2
             } // OR A, #i
             0x09 => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let left = self.read(bus, left_addr);
-                let right = self.read(bus, right_addr);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let left = self.read(bus, destination);
+                let right = self.read(bus, source);
                 if let Some(result) = self.alu(Alu::Or, left, right) {
-                    self.write(bus, left_addr, result);
+                    self.write(bus, destination, result);
                 };
                 6
             } // OR dd, ds
             0x0A => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let bit_value = self.read(bus, addr) & Self::bit_mask(bit) != 0;
                 self.set_flag(PSW_C, self.flag(PSW_C) || bit_value);
                 5
@@ -449,7 +473,7 @@ impl Spc700 {
             0x0E => {
                 let addr = self.addr_abs(bus);
                 let value = self.read(bus, addr);
-                self.set_nz(value & self.a);
+                self.set_nz(self.a.wrapping_sub(value));
                 let result = value | self.a;
                 self.write(bus, addr, result);
                 6
@@ -458,17 +482,13 @@ impl Spc700 {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
                 self.push(bus, ret as u8);
-                let psw = self.psw | PSW_B;
-                self.push(bus, psw);
+                self.push(bus, self.psw);
+                self.set_flag(PSW_B, true);
                 self.set_flag(PSW_I, false);
-                self.set_flag(PSW_B, false);
                 self.pc = self.read_word(bus, 0xFFDE);
                 8
             } // BRK
-            0x10 => {
-                self.branch(bus, !self.flag(PSW_N));
-                2
-            } // BPL r
+            0x10 => self.branch(bus, !self.flag(PSW_N)), // BPL r
             0x11 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -487,8 +507,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(0);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0x14 => {
                 let addr = self.addr_dp_x(bus);
@@ -547,9 +566,9 @@ impl Spc700 {
             } // OR (X), (Y)
             0x1A => {
                 let addr = self.addr_dp(bus);
-                let value = self.read_word(bus, addr).wrapping_sub(1);
-                self.write_word(bus, addr, value);
-                self.set_nz((value >> 8) as u8);
+                let value = self.read_word_dp(bus, addr).wrapping_sub(1);
+                self.write_word_dp(bus, addr, value);
+                self.set_nz16(value);
                 6
             } // DECW d
             0x1B => {
@@ -602,8 +621,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(1);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0x24 => {
                 let addr = self.addr_dp(bus);
@@ -649,18 +667,20 @@ impl Spc700 {
                 2
             } // AND A, #i
             0x29 => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let left = self.read(bus, left_addr);
-                let right = self.read(bus, right_addr);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let left = self.read(bus, destination);
+                let right = self.read(bus, source);
                 if let Some(result) = self.alu(Alu::And, left, right) {
-                    self.write(bus, left_addr, result);
+                    self.write(bus, destination, result);
                 };
                 6
             } // AND dd, ds
             0x2A => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let bit_value = self.read(bus, addr) & Self::bit_mask(bit) != 0;
                 self.set_flag(PSW_C, self.flag(PSW_C) || !bit_value);
                 5
@@ -687,17 +707,10 @@ impl Spc700 {
             0x2E => {
                 let addr = self.addr_dp(bus);
                 let value = self.read(bus, addr);
-                self.branch_cycles(bus, self.a != value, 7, 5);
-                5
+                self.branch_cycles(bus, self.a != value, 7, 5)
             } // CBNE d, r
-            0x2F => {
-                self.branch(bus, true);
-                4
-            } // BRA r
-            0x30 => {
-                self.branch(bus, self.flag(PSW_N));
-                2
-            } // BMI r
+            0x2F => self.branch(bus, true), // BRA r
+            0x30 => self.branch(bus, self.flag(PSW_N)), // BMI r
             0x31 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -716,8 +729,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(1);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0x34 => {
                 let addr = self.addr_dp_x(bus);
@@ -776,9 +788,9 @@ impl Spc700 {
             } // AND (X), (Y)
             0x3A => {
                 let addr = self.addr_dp(bus);
-                let value = self.read_word(bus, addr).wrapping_add(1);
-                self.write_word(bus, addr, value);
-                self.set_nz((value >> 8) as u8);
+                let value = self.read_word_dp(bus, addr).wrapping_add(1);
+                self.write_word_dp(bus, addr, value);
+                self.set_nz16(value);
                 6
             } // INCW d
             0x3B => {
@@ -834,8 +846,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(2);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0x44 => {
                 let addr = self.addr_dp(bus);
@@ -881,18 +892,20 @@ impl Spc700 {
                 2
             } // EOR A, #i
             0x49 => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let left = self.read(bus, left_addr);
-                let right = self.read(bus, right_addr);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let left = self.read(bus, destination);
+                let right = self.read(bus, source);
                 if let Some(result) = self.alu(Alu::Eor, left, right) {
-                    self.write(bus, left_addr, result);
+                    self.write(bus, destination, result);
                 };
                 6
             } // EOR dd, ds
             0x4A => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let bit_value = self.read(bus, addr) & Self::bit_mask(bit) != 0;
                 self.set_flag(PSW_C, self.flag(PSW_C) && bit_value);
                 4
@@ -919,7 +932,7 @@ impl Spc700 {
             0x4E => {
                 let addr = self.addr_abs(bus);
                 let value = self.read(bus, addr);
-                self.set_nz(value & self.a);
+                self.set_nz(self.a.wrapping_sub(value));
                 let result = value & !self.a;
                 self.write(bus, addr, result);
                 6
@@ -932,10 +945,7 @@ impl Spc700 {
                 self.pc = 0xFF00 | u16::from(offset);
                 6
             } // PCALL u
-            0x50 => {
-                self.branch(bus, !self.flag(PSW_V));
-                2
-            } // BVC r
+            0x50 => self.branch(bus, !self.flag(PSW_V)), // BVC r
             0x51 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -954,8 +964,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(2);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0x54 => {
                 let addr = self.addr_dp_x(bus);
@@ -1014,9 +1023,9 @@ impl Spc700 {
             } // EOR (X), (Y)
             0x5A => {
                 let addr = self.addr_dp(bus);
-                let value = self.read_word(bus, addr);
+                let value = self.read_word_dp(bus, addr);
                 self.set_flag(PSW_C, self.ya() >= value);
-                self.set_nz((self.ya().wrapping_sub(value) >> 8) as u8);
+                self.set_nz16(self.ya().wrapping_sub(value));
                 4
             } // CMPW YA, d
             0x5B => {
@@ -1069,8 +1078,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(3);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0x64 => {
                 let addr = self.addr_dp(bus);
@@ -1116,18 +1124,20 @@ impl Spc700 {
                 2
             } // CMP A, #i
             0x69 => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let left = self.read(bus, left_addr);
-                let right = self.read(bus, right_addr);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let left = self.read(bus, destination);
+                let right = self.read(bus, source);
                 if let Some(result) = self.alu(Alu::Cmp, left, right) {
-                    self.write(bus, left_addr, result);
+                    self.write(bus, destination, result);
                 };
                 6
             } // CMP dd, ds
             0x6A => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let bit_value = self.read(bus, addr) & Self::bit_mask(bit) != 0;
                 self.set_flag(PSW_C, self.flag(PSW_C) && !bit_value);
                 4
@@ -1155,9 +1165,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let value = self.read(bus, addr).wrapping_sub(1);
                 self.write(bus, addr, value);
-                self.set_nz(value);
-                self.branch_cycles(bus, value != 0, 7, 5);
-                5
+                self.branch_cycles(bus, value != 0, 7, 5)
             } // DBNZ d, r
             0x6F => {
                 let low = self.pull(bus);
@@ -1165,10 +1173,7 @@ impl Spc700 {
                 self.pc = u16::from(low) | (u16::from(high) << 8);
                 5
             } // RET
-            0x70 => {
-                self.branch(bus, self.flag(PSW_V));
-                2
-            } // BVS r
+            0x70 => self.branch(bus, self.flag(PSW_V)), // BVS r
             0x71 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -1187,8 +1192,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(3);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0x74 => {
                 let addr = self.addr_dp_x(bus);
@@ -1247,7 +1251,7 @@ impl Spc700 {
             } // CMP (X), (Y)
             0x7A => {
                 let addr = self.addr_dp(bus);
-                let value = self.read_word(bus, addr);
+                let value = self.read_word_dp(bus, addr);
                 let sum = self.ya().wrapping_add(value);
                 self.set_flag(PSW_H, (self.ya() & 0x0FFF) + (value & 0x0FFF) > 0x0FFF);
                 self.set_flag(PSW_C, u32::from(self.ya()) + u32::from(value) > 0xFFFF);
@@ -1311,8 +1315,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(4);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0x84 => {
                 let addr = self.addr_dp(bus);
@@ -1358,18 +1361,20 @@ impl Spc700 {
                 2
             } // ADC A, #i
             0x89 => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let left = self.read(bus, left_addr);
-                let right = self.read(bus, right_addr);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let left = self.read(bus, destination);
+                let right = self.read(bus, source);
                 if let Some(result) = self.alu(Alu::Adc, left, right) {
-                    self.write(bus, left_addr, result);
+                    self.write(bus, destination, result);
                 };
                 6
             } // ADC dd, ds
             0x8A => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let bit_value = self.read(bus, addr) & Self::bit_mask(bit) != 0;
                 self.set_flag(PSW_C, self.flag(PSW_C) ^ bit_value);
                 5
@@ -1404,10 +1409,7 @@ impl Spc700 {
                 self.write(bus, addr, value);
                 5
             } // MOV d, #i
-            0x90 => {
-                self.branch(bus, !self.flag(PSW_C));
-                2
-            } // BCC r
+            0x90 => self.branch(bus, !self.flag(PSW_C)), // BCC r
             0x91 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -1426,8 +1428,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(4);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0x94 => {
                 let addr = self.addr_dp_x(bus);
@@ -1486,9 +1487,10 @@ impl Spc700 {
             } // ADC (X), (Y)
             0x9A => {
                 let addr = self.addr_dp(bus);
-                let value = self.read_word(bus, addr);
+                let value = self.read_word_dp(bus, addr);
                 let diff = self.ya().wrapping_sub(value);
                 self.set_flag(PSW_C, self.ya() >= value);
+                self.set_flag(PSW_H, (self.ya() & 0x0FFF) >= (value & 0x0FFF));
                 self.set_flag(
                     PSW_V,
                     ((self.ya() ^ value) & (self.ya() ^ diff) & 0x8000) != 0,
@@ -1513,19 +1515,22 @@ impl Spc700 {
                 2
             } // MOV X, SP
             0x9E => {
-                if self.x != 0 {
-                    let ya = self.ya();
-                    let quotient = ya / u16::from(self.x);
-                    let remainder = ya % u16::from(self.x);
-                    self.a = quotient as u8;
-                    self.y = remainder as u8;
-                    self.set_flag(PSW_V, quotient > 0xFF);
-                    self.set_flag(PSW_H, (quotient & 0x0F) > 9);
-                    self.set_nz(self.a);
+                // Exact S-SMP division, including the overflow path used when
+                // the quotient does not fit in V + A (bsnes spc700.cpp).
+                let ya = self.ya();
+                let x = u16::from(self.x);
+                self.set_flag(PSW_H, (self.y & 0x0F) >= (self.x & 0x0F));
+                self.set_flag(PSW_V, self.y >= self.x);
+                if u16::from(self.y) < (x << 1) {
+                    self.a = if x == 0 { 0xFF } else { (ya / x) as u8 };
+                    self.y = if x == 0 { 0 } else { (ya % x) as u8 };
                 } else {
-                    self.set_flag(PSW_V, true);
-                    self.y = 0xFF;
-                };
+                    let base = ya.wrapping_sub(x << 9);
+                    let divisor = 256u16.wrapping_sub(x);
+                    self.a = (255u16).wrapping_sub(base / divisor) as u8;
+                    self.y = x.wrapping_add(base % divisor) as u8;
+                }
+                self.set_nz(self.a);
                 12
             } // DIV YA, X
             0x9F => {
@@ -1555,8 +1560,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(5);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0xA4 => {
                 let addr = self.addr_dp(bus);
@@ -1602,18 +1606,20 @@ impl Spc700 {
                 2
             } // SBC A, #i
             0xA9 => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let left = self.read(bus, left_addr);
-                let right = self.read(bus, right_addr);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let left = self.read(bus, destination);
+                let right = self.read(bus, source);
                 if let Some(result) = self.alu(Alu::Sbc, left, right) {
-                    self.write(bus, left_addr, result);
+                    self.write(bus, destination, result);
                 };
                 6
             } // SBC dd, ds
             0xAA => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let value = self.read(bus, addr) & Self::bit_mask(bit) != 0;
                 self.set_flag(PSW_C, value);
                 4
@@ -1640,7 +1646,6 @@ impl Spc700 {
             } // CMP Y, #i
             0xAE => {
                 self.a = self.pull(bus);
-                self.set_nz(self.a);
                 4
             } // POP A
             0xAF => {
@@ -1650,10 +1655,7 @@ impl Spc700 {
                 self.x = self.x.wrapping_add(1);
                 4
             } // MOV (X)+, A
-            0xB0 => {
-                self.branch(bus, self.flag(PSW_C));
-                2
-            } // BCS r
+            0xB0 => self.branch(bus, self.flag(PSW_C)), // BCS r
             0xB1 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -1672,8 +1674,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(5);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0xB4 => {
                 let addr = self.addr_dp_x(bus);
@@ -1732,7 +1733,7 @@ impl Spc700 {
             } // SBC (X), (Y)
             0xBA => {
                 let addr = self.addr_dp(bus);
-                let value = self.read_word(bus, addr);
+                let value = self.read_word_dp(bus, addr);
                 self.set_ya(value);
                 5
             } // MOVW YA, d
@@ -1752,15 +1753,17 @@ impl Spc700 {
                 2
             } // MOV SP, X
             0xBE => {
-                if !self.flag(PSW_C) {
-                    self.a = self.a.wrapping_sub(1);
+                let carry = self.flag(PSW_C);
+                let half = self.flag(PSW_H);
+                let mut result = u16::from(self.a);
+                if self.a > 0x99 || !carry {
+                    result = result.wrapping_sub(0x60);
+                    self.set_flag(PSW_C, false);
                 }
-                if self.a & 0x0F > 9 {
-                    self.a = self.a.wrapping_sub(6);
+                if (result as u8 & 0x0F) > 9 || !half {
+                    result = result.wrapping_sub(0x06);
                 }
-                if self.a & 0xF0 > 0x90 {
-                    self.a = self.a.wrapping_sub(0x60);
-                }
+                self.a = result as u8;
                 self.set_nz(self.a);
                 3
             } // DAS A
@@ -1794,8 +1797,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(6);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0xC4 => {
                 let addr = self.addr_dp(bus);
@@ -1834,8 +1836,10 @@ impl Spc700 {
                 5
             } // MOV !a, X
             0xCA => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let mask = Self::bit_mask(bit);
                 let value = self.read(bus, addr);
                 let value = if self.flag(PSW_C) {
@@ -1866,7 +1870,6 @@ impl Spc700 {
             } // MOV X, #i
             0xCE => {
                 self.x = self.pull(bus);
-                self.set_nz(self.x);
                 4
             } // POP X
             0xCF => {
@@ -1876,10 +1879,7 @@ impl Spc700 {
                 self.set_nz(self.y);
                 9
             } // MUL YA
-            0xD0 => {
-                self.branch(bus, !self.flag(PSW_Z));
-                2
-            } // BNE r
+            0xD0 => self.branch(bus, !self.flag(PSW_Z)), // BNE r
             0xD1 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -1898,8 +1898,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(6);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0xD4 => {
                 let addr = self.addr_dp_x(bus);
@@ -1940,7 +1939,7 @@ impl Spc700 {
             0xDA => {
                 let addr = self.addr_dp(bus);
                 let value = self.ya();
-                self.write_word(bus, addr, value);
+                self.write_word_dp(bus, addr, value);
                 5
             } // MOVW d, YA
             0xDB => {
@@ -1961,24 +1960,26 @@ impl Spc700 {
             0xDE => {
                 let addr = self.addr_dp_x(bus);
                 let value = self.read(bus, addr);
-                self.branch_cycles(bus, self.a != value, 8, 6);
-                6
+                self.branch_cycles(bus, self.a != value, 8, 6)
             } // CBNE d+X, r
             0xDF => {
-                if self.flag(PSW_C) {
-                    self.a = self.a.wrapping_add(1);
+                let carry = self.flag(PSW_C);
+                let half = self.flag(PSW_H);
+                let mut result = u16::from(self.a);
+                if self.a > 0x99 || carry {
+                    result = result.wrapping_add(0x60);
+                    self.set_flag(PSW_C, true);
                 }
-                if self.a & 0x0F > 9 {
-                    self.a = self.a.wrapping_add(6);
+                if (result as u8 & 0x0F) > 9 || half {
+                    result = result.wrapping_add(0x06);
                 }
-                if self.a & 0xF0 > 0x90 {
-                    self.a = self.a.wrapping_add(0x60);
-                }
+                self.a = result as u8;
                 self.set_nz(self.a);
                 3
             } // DAA A
             0xE0 => {
                 self.set_flag(PSW_V, false);
+                self.set_flag(PSW_H, false);
                 2
             } // CLRV
             0xE1 => {
@@ -1999,8 +2000,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(7);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, set, 7, 5);
-                5
+                self.branch_cycles(bus, set, 7, 5)
             } // BBS d.bit, r
             0xE4 => {
                 let addr = self.addr_dp(bus);
@@ -2043,8 +2043,10 @@ impl Spc700 {
                 4
             } // MOV X, !a
             0xEA => {
-                let addr = self.addr_abs(bus);
-                let bit = self.fetch(bus) & 7;
+                let low = self.fetch(bus);
+                let high = self.fetch(bus);
+                let addr = u16::from(low) | (u16::from(high & 0x1F) << 8);
+                let bit = high >> 5;
                 let mask = Self::bit_mask(bit);
                 let value = self.read(bus, addr) ^ mask;
                 self.write(bus, addr, value);
@@ -2070,17 +2072,13 @@ impl Spc700 {
             } // NOTC
             0xEE => {
                 self.y = self.pull(bus);
-                self.set_nz(self.y);
                 4
             } // POP Y
             0xEF => {
                 self.stopped = true;
-                0
+                7
             } // SLEEP
-            0xF0 => {
-                self.branch(bus, self.flag(PSW_Z));
-                2
-            } // BEQ r
+            0xF0 => self.branch(bus, self.flag(PSW_Z)), // BEQ r
             0xF1 => {
                 let ret = self.pc;
                 self.push(bus, (ret >> 8) as u8);
@@ -2099,8 +2097,7 @@ impl Spc700 {
                 let addr = self.addr_dp(bus);
                 let mask = Self::bit_mask(7);
                 let set = self.read(bus, addr) & mask != 0;
-                self.branch_cycles(bus, !set, 7, 5);
-                5
+                self.branch_cycles(bus, !set, 7, 5)
             } // BBC d.bit, r
             0xF4 => {
                 let addr = self.addr_dp_x(bus);
@@ -2145,10 +2142,10 @@ impl Spc700 {
                 4
             } // MOV X, d+Y
             0xFA => {
-                let left_addr = self.addr_dp(bus);
-                let right_addr = self.addr_dp(bus);
-                let value = self.read(bus, right_addr);
-                self.write(bus, left_addr, value);
+                let source = self.addr_dp(bus);
+                let destination = self.addr_dp(bus);
+                let value = self.read(bus, source);
+                self.write(bus, destination, value);
                 5
             } // MOV dd, ds
             0xFB => {
@@ -2169,13 +2166,11 @@ impl Spc700 {
             } // MOV Y, A
             0xFE => {
                 self.y = self.y.wrapping_sub(1);
-                self.set_nz(self.y);
-                self.branch_cycles(bus, self.y != 0, 6, 4);
-                4
+                self.branch_cycles(bus, self.y != 0, 6, 4)
             } // DBNZ Y, r
             0xFF => {
                 self.stopped = true;
-                0
+                7
             } // STOP
         }
     }

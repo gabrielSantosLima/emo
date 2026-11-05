@@ -610,6 +610,7 @@ name = "emo-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "emo-apu",
  "emo-core",
  "emo-cpu",
  "serde",

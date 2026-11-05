@@ -130,6 +130,12 @@ impl Dsp {
         self.address = value & 0x7F;
     }
 
+    /// Raw register value (for diagnostics and tests).
+    #[must_use]
+    pub fn register(&self, index: u8) -> u8 {
+        self.registers[usize::from(index) & 0x7F]
+    }
+
     /// Master volume, left channel.
     #[must_use]
     pub fn volume_left(&self) -> u8 {
