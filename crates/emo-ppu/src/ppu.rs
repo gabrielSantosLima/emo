@@ -416,14 +416,14 @@ impl Ppu {
             0x2130 => self.cgwsel = value,
             0x2131 => self.cgadsub = value,
             0x2132 => {
-                let index = match value >> 5 {
-                    0 => 0,
-                    1 => 1,
-                    2 => 2,
-                    _ => 3,
-                };
-                if index < 3 {
-                    self.coldata[index] = value & 0x1F;
+                if value & 0x20 != 0 {
+                    self.coldata[0] = value & 0x1F;
+                }
+                if value & 0x40 != 0 {
+                    self.coldata[1] = value & 0x1F;
+                }
+                if value & 0x80 != 0 {
+                    self.coldata[2] = value & 0x1F;
                 }
             }
             0x2133 => self.setini = value,
@@ -515,6 +515,7 @@ impl Ppu {
         let mode = self.bgmode & 0x07;
         let mut best_rank = 0u8;
         let mut index = 0u16;
+        let mut math_bit = 0x20u8; // backdrop
 
         for (layer, ranks) in PRIORITY_RANK.iter().enumerate() {
             if self.tm & (1 << layer) == 0 || self.layer_hidden(layer, x) {
@@ -525,6 +526,7 @@ impl Ppu {
                 if rank > best_rank {
                     best_rank = rank;
                     index = palette_index;
+                    math_bit = 1 << layer;
                 }
             }
         }
@@ -537,13 +539,18 @@ impl Ppu {
             if rank > best_rank {
                 best_rank = rank;
                 index = palette_index;
+                math_bit = 0x10;
             }
         }
 
         let color = self.cgram[index as usize & 0xFF];
         let (mut r, mut g, mut b) = bgr555_to_rgb(color);
 
-        if self.cgadsub & 0x80 != 0 && self.cgwsel & 0x02 == 0 && best_rank != 0 {
+        if self.cgadsub & 0x80 != 0
+            && self.cgadsub & math_bit != 0
+            && self.cgwsel & 0x02 == 0
+            && best_rank != 0
+        {
             let fixed = (
                 (self.coldata[0] << 3) | (self.coldata[0] >> 2),
                 (self.coldata[1] << 3) | (self.coldata[1] >> 2),
@@ -926,6 +933,42 @@ mod tests {
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
+        assert_eq!(&ppu.framebuffer()[..3], &[0, 248, 0]);
+    }
+
+    #[test]
+    fn coldata_selects_channels_with_the_high_bits() {
+        let mut ppu = ppu();
+        ppu.write_register(0x2132, 0x20 | 0x10);
+        ppu.write_register(0x2132, 0x40 | 0x08);
+        assert_eq!(ppu.coldata, [0x10, 0x08, 0]);
+
+        ppu.write_register(0x2132, 0xE0 | 0x04);
+        assert_eq!(ppu.coldata, [0x04, 0x04, 0x04]);
+    }
+
+    #[test]
+    fn color_math_only_applies_to_enabled_layers() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 1, 0, 31, 0); // BG1 green
+        ppu.write_register(0x2107, 0x00);
+        ppu.write_register(0x210B, 0x01);
+        ppu.write_register(0x2105, 0x00);
+        ppu.write_register(0x212C, 0x01);
+        for row in 0..8 {
+            ppu.write_vram_word(0x1000 + row, 0x00FF);
+        }
+        ppu.write_vram_word(0, 0x0000);
+
+        ppu.write_register(0x2132, 0x20 | 31); // fixed color: red
+        ppu.write_register(0x2130, 0x00); // fixed color, no window
+        ppu.write_register(0x2131, 0x80 | 0x01); // math + BG1
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+        assert_eq!(&ppu.framebuffer()[..3], &[248, 248, 0]);
+
+        ppu.write_register(0x2131, 0x80 | 0x10); // math + OBJ only
+        let next_frame = (u64::from(ppu.timing().lines_per_frame) + 2) * ppu.timing().line_cycles;
+        ppu.advance_to(next_frame);
         assert_eq!(&ppu.framebuffer()[..3], &[0, 248, 0]);
     }
 
