@@ -53,6 +53,14 @@ impl Timing {
     }
 }
 
+/// Palette indices and priorities for the two screens of one scanline.
+struct LineBuffers {
+    bg_index: [[u16; SCREEN_WIDTH]; 4],
+    bg_priority: [[u8; SCREEN_WIDTH]; 4],
+    obj_index: [u16; SCREEN_WIDTH],
+    obj_priority: [u8; SCREEN_WIDTH],
+}
+
 /// The S-PPU.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Ppu {
@@ -516,72 +524,88 @@ impl Ppu {
         }
 
         let mode = self.bgmode & 0x07;
-        let mut bg_index = [[0u16; SCREEN_WIDTH]; 4];
-        let mut bg_priority = [[0u8; SCREEN_WIDTH]; 4];
-        let mut obj_index = [0u16; SCREEN_WIDTH];
-        let mut obj_priority = [0u8; SCREEN_WIDTH];
+        let mut line = LineBuffers {
+            bg_index: [[0u16; SCREEN_WIDTH]; 4],
+            bg_priority: [[0u8; SCREEN_WIDTH]; 4],
+            obj_index: [0u16; SCREEN_WIDTH],
+            obj_priority: [0u8; SCREEN_WIDTH],
+        };
 
         if mode == 7 {
-            for (x, slot) in bg_index[0].iter_mut().enumerate() {
+            for (x, slot) in line.bg_index[0].iter_mut().enumerate() {
                 if let Some((index, priority)) = self.mode7_pixel(x as u16, y) {
                     *slot = index;
-                    bg_priority[0][x] = priority;
+                    line.bg_priority[0][x] = priority;
                 }
             }
         } else {
             for layer in 0..4 {
-                if self.tm & (1 << layer) == 0 {
+                if (self.tm | self.ts) & (1 << layer) == 0 {
                     continue;
                 }
                 self.build_bg_line(
                     layer,
                     y,
                     mode,
-                    &mut bg_index[layer],
-                    &mut bg_priority[layer],
+                    &mut line.bg_index[layer],
+                    &mut line.bg_priority[layer],
                 );
             }
         }
 
-        if self.tm & 0x10 != 0 {
-            self.build_sprite_line(y, &mut obj_index, &mut obj_priority);
+        if (self.tm | self.ts) & 0x10 != 0 {
+            self.build_sprite_line(y, &mut line.obj_index, &mut line.obj_priority);
         }
 
         for x in 0..SCREEN_WIDTH {
-            let mut best_rank = 0u8;
-            let mut index = 0u16;
-            let mut math_bit = 0x20u8; // backdrop
-
-            for layer in 0..4 {
-                if self.tm & (1 << layer) == 0 || self.layer_hidden(layer, x as u16) {
-                    continue;
-                }
-                if bg_index[layer][x] == 0 {
-                    continue;
-                }
-                let rank = PRIORITY_RANK[layer][usize::from(bg_priority[layer][x] & 3)];
-                if rank > best_rank {
-                    best_rank = rank;
-                    index = bg_index[layer][x];
-                    math_bit = 1 << layer;
-                }
-            }
-
-            if obj_index[x] != 0 && !self.layer_hidden(4, x as u16) {
-                let rank = PRIORITY_RANK[usize::from(obj_priority[x] & 3)][4];
-                if rank > best_rank {
-                    best_rank = rank;
-                    index = obj_index[x];
-                    math_bit = 0x10;
-                }
-            }
-
-            let (r, g, b) = self.shade(index, math_bit, best_rank);
+            let main = self.compose(x, self.tm, self.tmw, &line);
+            let sub = self.compose(x, self.ts, self.tsw, &line);
+            let (r, g, b) = self.shade(main, sub, x as u16);
             let base = start + x * 3;
             self.framebuffer[base] = r;
             self.framebuffer[base + 1] = g;
             self.framebuffer[base + 2] = b;
         }
+    }
+
+    /// Front-most opaque pixel of one screen at column `x`, with the layers
+    /// selected by `screen` and force-disabled by `windows` inside the window
+    /// area. Returns the palette index, its priority rank and its `CGADSUB` bit.
+    fn compose(
+        &self,
+        x: usize,
+        screen: u8,
+        windows: u8,
+        line: &LineBuffers,
+    ) -> Option<(u16, u8, u8)> {
+        let mut best_rank = 0u8;
+        let mut result = None;
+
+        for layer in 0..4 {
+            if screen & (1 << layer) == 0 || line.bg_index[layer][x] == 0 {
+                continue;
+            }
+            if windows & (1 << layer) != 0 && self.layer_window(layer, x as u16) {
+                continue;
+            }
+            let rank = PRIORITY_RANK[layer][usize::from(line.bg_priority[layer][x] & 3)];
+            if rank > best_rank {
+                best_rank = rank;
+                result = Some((line.bg_index[layer][x], rank, 1 << layer));
+            }
+        }
+
+        if screen & 0x10 != 0
+            && line.obj_index[x] != 0
+            && (windows & 0x10 == 0 || !self.layer_window(4, x as u16))
+        {
+            let rank = PRIORITY_RANK[usize::from(line.obj_priority[x] & 3)][4];
+            if rank > best_rank {
+                result = Some((line.obj_index[x], rank, 0x10));
+            }
+        }
+
+        result
     }
 
     /// Decode one background scanline into palette indices, one span per tile.
@@ -758,62 +782,111 @@ impl Ppu {
         }
     }
 
+    /// Per-pixel fallback used when mosaic is active; it samples the layers
+    /// directly instead of using the scanline buffers.
     fn pixel_color(&self, x: u16, y: u16) -> (u8, u8, u8) {
+        let main = self.pixel_winner(x, y, self.tm, self.tmw);
+        let sub = self.pixel_winner(x, y, self.ts, self.tsw);
+        self.shade(main, sub, x)
+    }
+
+    fn pixel_winner(&self, x: u16, y: u16, screen: u8, windows: u8) -> Option<(u16, u8, u8)> {
         let mode = self.bgmode & 0x07;
         let mut best_rank = 0u8;
-        let mut index = 0u16;
-        let mut math_bit = 0x20u8; // backdrop
+        let mut result = None;
 
         for (layer, ranks) in PRIORITY_RANK.iter().enumerate() {
-            if self.tm & (1 << layer) == 0 || self.layer_hidden(layer, x) {
+            if screen & (1 << layer) == 0 {
                 continue;
             }
-            if let Some((palette_index, priority)) = self.bg_pixel(layer, x, y, mode) {
+            if windows & (1 << layer) != 0 && self.layer_window(layer, x) {
+                continue;
+            }
+            if let Some((index, priority)) = self.bg_pixel(layer, x, y, mode) {
                 let rank = ranks[usize::from(priority & 3)];
                 if rank > best_rank {
                     best_rank = rank;
-                    index = palette_index;
-                    math_bit = 1 << layer;
+                    result = Some((index, rank, 1 << layer));
                 }
             }
         }
 
-        if self.tm & 0x10 != 0
-            && !self.layer_hidden(4, x)
-            && let Some((palette_index, priority)) = self.sprite_pixel(x, y)
+        if screen & 0x10 != 0
+            && (windows & 0x10 == 0 || !self.layer_window(4, x))
+            && let Some((index, priority)) = self.sprite_pixel(x, y)
         {
             let rank = PRIORITY_RANK[usize::from(priority & 3)][4];
             if rank > best_rank {
-                best_rank = rank;
-                index = palette_index;
-                math_bit = 0x10;
+                result = Some((index, rank, 0x10));
             }
         }
 
-        self.shade(index, math_bit, best_rank)
+        result
     }
 
-    /// Resolve a palette index into RGB, applying fixed-color math and the
-    /// master brightness.
-    fn shade(&self, index: u16, math_bit: u8, best_rank: u8) -> (u8, u8, u8) {
-        let color = self.cgram[usize::from(index) & 0xFF];
-        let (mut r, mut g, mut b) = bgr555_to_rgb(color);
+    /// Whether color math applies at this column, from `CGWSEL` bits 5-4
+    /// (0 = always, 1 = inside the math window, 2 = outside, 3 = never).
+    fn math_enabled(&self, inside: bool) -> bool {
+        match (self.cgwsel >> 4) & 0x03 {
+            0 => true,
+            1 => inside,
+            2 => !inside,
+            _ => false,
+        }
+    }
 
-        if self.cgadsub & 0x80 != 0
-            && self.cgadsub & math_bit != 0
-            && self.cgwsel & 0x02 == 0
-            && best_rank != 0
-        {
-            let fixed = (
-                (self.coldata[0] << 3) | (self.coldata[0] >> 2),
-                (self.coldata[1] << 3) | (self.coldata[1] >> 2),
-                (self.coldata[2] << 3) | (self.coldata[2] >> 2),
-            );
+    /// Whether the main screen is forced black, from `CGWSEL` bits 7-6
+    /// (0 = never, 1 = outside the math window, 2 = inside, 3 = always).
+    fn forced_black(&self, inside: bool) -> bool {
+        match (self.cgwsel >> 6) & 0x03 {
+            0 => false,
+            1 => !inside,
+            2 => inside,
+            _ => true,
+        }
+    }
+
+    /// Resolve the winning main pixel into RGB: color math against the sub
+    /// screen (or the fixed `COLDATA` color) and the master brightness.
+    fn shade(
+        &self,
+        main: Option<(u16, u8, u8)>,
+        sub: Option<(u16, u8, u8)>,
+        x: u16,
+    ) -> (u8, u8, u8) {
+        let (index, rank, math_bit) = main.unwrap_or((0, 0, 0x20));
+        let (mut r, mut g, mut b) = bgr555_to_rgb(self.cgram[usize::from(index) & 0xFF]);
+
+        let inside = self.math_window(x);
+        let black = self.forced_black(inside);
+        let fixed = (
+            (self.coldata[0] << 3) | (self.coldata[0] >> 2),
+            (self.coldata[1] << 3) | (self.coldata[1] >> 2),
+            (self.coldata[2] << 3) | (self.coldata[2] >> 2),
+        );
+
+        if rank != 0 && self.cgadsub & math_bit != 0 && self.math_enabled(inside) {
+            let use_sub = self.cgwsel & 0x02 != 0;
+            let (operand, half) = match sub {
+                // The sub pixel only takes part when it is at least as
+                // front-most as the main pixel.
+                Some((sub_index, sub_rank, _)) if use_sub && sub_rank >= rank => (
+                    bgr555_to_rgb(self.cgram[usize::from(sub_index) & 0xFF]),
+                    true,
+                ),
+                // A transparent sub screen uses the fixed color; its backdrop
+                // never halves unless sub-screen layers are disabled entirely.
+                _ => (fixed, !use_sub),
+            };
             let subtract = self.cgadsub & 0x20 != 0;
-            let half = self.cgadsub & 0x40 != 0;
-            r = math(r, fixed.0, subtract, half);
-            g = math(g, fixed.1, subtract, half);
-            b = math(b, fixed.2, subtract, half);
+            let half = half && self.cgadsub & 0x40 != 0 && !black;
+            r = math(r, operand.0, subtract, half);
+            g = math(g, operand.1, subtract, half);
+            b = math(b, operand.2, subtract, half);
+        }
+
+        if black {
+            return (0, 0, 0);
         }
 
         let brightness = u16::from(self.inidisp & 0x0F) + 1;
@@ -828,47 +901,72 @@ impl Ppu {
         let left = u16::from(self.wh[window * 2]);
         let right = u16::from(self.wh[window * 2 + 1]);
         let x = x & 0xff;
-        if left <= right {
-            x >= left && x <= right
-        } else {
-            x >= left || x <= right
-        }
+        // A zero or negative width means an empty inside area (fullsnes).
+        left <= right && x >= left && x <= right
     }
 
+    /// Window enable/invert field for a BG/OBJ layer and window number.
     fn window_field(&self, layer: usize, window: usize) -> u8 {
         let (selector, shift) = match layer {
             0 => (self.w12sel, 0),
             1 => (self.w12sel, 2),
             2 => (self.w34sel, 0),
             3 => (self.w34sel, 2),
+            // `WOBJSEL` bits 0-3 hold the two OBJ windows.
             _ => (self.wobjsel, 0),
         };
         (selector >> (shift + window * 4)) & 0x03
     }
 
-    fn layer_window(&self, layer: usize, x: u16) -> bool {
-        let mut masks = [false; 2];
-        for (window, mask) in masks.iter_mut().enumerate() {
-            let field = self.window_field(layer, window);
-            if field & 0x01 != 0 {
-                *mask = self.window_inside(window, x) != (field & 0x02 != 0);
-            }
+    /// Window enable/invert field for the color-math window, taken from the
+    /// upper half of `WOBJSEL`.
+    fn math_window_field(&self, window: usize) -> u8 {
+        (self.wobjsel >> (4 + window * 2)) & 0x03
+    }
+
+    /// Combine the two window areas with the given mask logic. Per fullsnes,
+    /// the logic is only applied when both windows are enabled; a single
+    /// enabled window is used as-is and two disabled windows produce an empty
+    /// area.
+    fn window_area(&self, fields: [u8; 2], logic: u8, x: u16) -> bool {
+        let masks = [
+            (fields[0] & 0x01 != 0).then(|| self.window_inside(0, x) != (fields[0] & 0x02 != 0)),
+            (fields[1] & 0x01 != 0).then(|| self.window_inside(1, x) != (fields[1] & 0x02 != 0)),
+        ];
+        match (masks[0], masks[1]) {
+            (None, None) => false,
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (Some(a), Some(b)) => match logic & 0x03 {
+                0 => a || b,
+                1 => a && b,
+                2 => a ^ b,
+                _ => !(a ^ b),
+            },
         }
+    }
+
+    fn layer_window(&self, layer: usize, x: u16) -> bool {
         let logic = if layer == 4 {
             self.wobjlog & 0x03
         } else {
             (self.wbglog >> (layer * 2)) & 0x03
         };
-        match logic {
-            0 => masks[0] || masks[1],
-            1 => masks[0] && masks[1],
-            2 => masks[0] ^ masks[1],
-            _ => !(masks[0] ^ masks[1]),
-        }
+        self.window_area(
+            [self.window_field(layer, 0), self.window_field(layer, 1)],
+            logic,
+            x,
+        )
     }
 
-    fn layer_hidden(&self, layer: usize, x: u16) -> bool {
-        self.tmw & (1 << layer) != 0 && self.layer_window(layer, x)
+    /// The color-math window uses the `MATH` fields of `WOBJSEL` and the
+    /// `WOBJLOG` bits 2-3 for its mask logic.
+    fn math_window(&self, x: u16) -> bool {
+        self.window_area(
+            [self.math_window_field(0), self.math_window_field(1)],
+            self.wobjlog >> 2,
+            x,
+        )
     }
 
     fn bg_pixel(&self, layer: usize, x: u16, y: u16, mode: u8) -> Option<(u16, u8)> {
@@ -1295,6 +1393,99 @@ mod tests {
         ppu.write_vram_word(u16::from(tile) * 16, 0x0080);
     }
 
+    /// Fill BG1 with a single opaque colour across the whole visible line.
+    fn fill_bg1(ppu: &mut Ppu) {
+        ppu.write_register(0x2107, 0x00);
+        ppu.write_register(0x210B, 0x01);
+        ppu.write_register(0x2105, 0x00);
+        ppu.write_register(0x212C, 0x01);
+        for entry in 0..32 {
+            ppu.write_vram_word(entry, 0);
+        }
+        for row in 0..8 {
+            ppu.write_vram_word(0x1000 + row, 0x0080);
+        }
+    }
+
+    #[test]
+    fn subscreen_color_math_adds_the_sub_layer() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 1, 0, 31, 0); // main BG1: green
+        set_color(&mut ppu, 9, 31, 0, 0); // sub BG2: red
+        fill_bg1(&mut ppu);
+
+        // Sub screen: BG2 with its own map and tile base.
+        ppu.write_register(0x212D, 0x02);
+        ppu.write_register(0x2108, 0x04);
+        ppu.write_register(0x210B, 0x11);
+        for entry in 0..32 {
+            ppu.write_vram_word(0x400 + entry, 0);
+        }
+
+        ppu.write_register(0x2130, 0x02); // sub BG/OBJ enable, math always
+        ppu.write_register(0x2131, 0x80 | 0x01); // add, math on BG1
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        assert_eq!(&ppu.framebuffer()[..3], &[248, 248, 0]);
+    }
+
+    #[test]
+    fn math_window_uses_the_upper_wobjsel_fields() {
+        let mut ppu = ppu();
+        ppu.write_register(0x2125, 0x50); // math window 1 inside
+        ppu.write_register(0x2126, 0x10);
+        ppu.write_register(0x2127, 0x20);
+        ppu.write_register(0x212B, 0x00);
+
+        assert!(ppu.math_window(0x18));
+        assert!(!ppu.math_window(0x08));
+        assert_eq!(ppu.math_window_field(0), 1);
+
+        ppu.write_register(0x2125, 0x00);
+        assert!(!ppu.math_window(0x18));
+    }
+
+    #[test]
+    fn color_math_can_be_limited_to_the_math_window() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 1, 0, 31, 0);
+        fill_bg1(&mut ppu);
+
+        ppu.write_register(0x2125, 0x10); // math window 1: inside
+        ppu.write_register(0x2126, 0x10);
+        ppu.write_register(0x2127, 0x1F);
+        ppu.write_register(0x2130, 0x10); // math only inside the window
+        ppu.write_register(0x2131, 0x80 | 0x01);
+        ppu.write_register(0x2132, 0x20 | 31); // fixed colour: red
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        // Inside the window (x = 0x18): green + red.
+        let inside = (0x18 * 3) as usize;
+        assert_eq!(&ppu.framebuffer()[inside..inside + 3], &[248, 248, 0]);
+        // Outside the window (x = 0x08): raw green.
+        let outside = (0x08 * 3) as usize;
+        assert_eq!(&ppu.framebuffer()[outside..outside + 3], &[0, 248, 0]);
+    }
+
+    #[test]
+    fn forced_black_applies_inside_the_math_window() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 1, 0, 31, 0);
+        fill_bg1(&mut ppu);
+
+        ppu.write_register(0x2125, 0x10); // math window 1: inside
+        ppu.write_register(0x2126, 0x10);
+        ppu.write_register(0x2127, 0x1F);
+        ppu.write_register(0x2130, 0x80); // force black inside the window
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        assert_eq!(&ppu.framebuffer()[(0x18 * 3) as usize..][..3], &[0, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[(0x08 * 3) as usize..][..3], &[0, 248, 0]);
+    }
+
     #[test]
     fn sprite_priority_follows_the_number_not_the_oam_index() {
         let mut ppu = ppu();
@@ -1358,13 +1549,13 @@ mod tests {
         ppu.write_register(0x2123, 0x01); // BG1: window 1 enabled, not inverted
         ppu.write_register(0x212E, 0x01); // TMW: disable BG1 inside the window
 
-        assert!(ppu.layer_hidden(0, 0x18));
-        assert!(!ppu.layer_hidden(0, 0x08));
-        assert!(!ppu.layer_hidden(1, 0x18));
+        assert!(ppu.layer_window(0, 0x18));
+        assert!(!ppu.layer_window(0, 0x08));
+        assert!(!ppu.layer_window(1, 0x18));
 
         ppu.write_register(0x2123, 0x03); // inverted: outside is masked
-        assert!(!ppu.layer_hidden(0, 0x18));
-        assert!(ppu.layer_hidden(0, 0x08));
+        assert!(!ppu.layer_window(0, 0x18));
+        assert!(ppu.layer_window(0, 0x08));
     }
 
     #[test]
