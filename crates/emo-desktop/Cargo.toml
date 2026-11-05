@@ -1,0 +1,22 @@
+[package]
+name = "emo-desktop"
+description = "Desktop frontend (window, audio and input) for emo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "emo-desktop"
+path = "src/main.rs"
+
+[dependencies]
+emo-core.workspace = true
+winit = "0.30"
+softbuffer = "0.4"
+cpal = "0.15"
+
+[lints]
+workspace = true

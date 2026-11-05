@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/emo-apu", "crates/emo-cli", "crates/emo-core", "crates/emo-cpu", "crates/emo-ppu"]
+members = [
+    "crates/emo-apu",
+    "crates/emo-cli",
+    "crates/emo-core",
+    "crates/emo-cpu",
+    "crates/emo-desktop",
+    "crates/emo-ppu",
+]
 
 [workspace.package]
 version = "0.0.0"

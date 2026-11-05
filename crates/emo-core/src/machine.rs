@@ -359,6 +359,23 @@ impl Machine {
         self.memory.apu_mut().take_audio()
     }
 
+    /// Visible RGB888 frame, `256 * visible_lines * 3` bytes.
+    #[must_use]
+    pub fn framebuffer(&self) -> &[u8] {
+        self.memory.ppu().framebuffer()
+    }
+
+    /// Number of visible scanlines in the framebuffer.
+    #[must_use]
+    pub const fn visible_lines(&self) -> u16 {
+        self.memory.ppu().visible_lines()
+    }
+
+    /// Set the buttons held on a controller port (active high).
+    pub fn set_buttons(&mut self, port: usize, buttons: u16) {
+        self.memory.set_buttons(port, buttons);
+    }
+
     /// Fingerprint of the current machine state.
     ///
     /// FNV-1a over the CPU registers, WRAM and save RAM. Once the PPU exists,
