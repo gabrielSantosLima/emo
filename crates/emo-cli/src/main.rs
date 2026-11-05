@@ -50,6 +50,9 @@ enum Command {
         /// Write the final 64 KiB of VRAM to a file.
         #[arg(long)]
         dump_vram: Option<PathBuf>,
+        /// Write the final 128 KiB of WRAM to a file.
+        #[arg(long)]
+        dump_wram: Option<PathBuf>,
         /// Print CPU and APU state after the run.
         #[arg(long)]
         debug: bool,
@@ -110,6 +113,7 @@ fn main() -> ExitCode {
             save_state,
             dump_frame,
             dump_vram,
+            dump_wram,
             debug,
             spc_trace,
             cpu_trace,
@@ -123,6 +127,7 @@ fn main() -> ExitCode {
             save_state.as_ref(),
             dump_frame.as_ref(),
             dump_vram.as_ref(),
+            dump_wram.as_ref(),
             debug,
             spc_trace,
             cpu_trace,
@@ -144,6 +149,7 @@ fn run(
     save_state_path: Option<&PathBuf>,
     dump_frame_path: Option<&PathBuf>,
     dump_vram_path: Option<&PathBuf>,
+    dump_wram_path: Option<&PathBuf>,
     debug: bool,
     spc_trace: usize,
     cpu_trace: usize,
@@ -407,6 +413,13 @@ fn run(
         && let Err(error) = std::fs::write(dump_vram_path, machine.memory().ppu().vram())
     {
         eprintln!("failed to write {}: {error}", dump_vram_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    if let Some(dump_wram_path) = dump_wram_path
+        && let Err(error) = std::fs::write(dump_wram_path, machine.memory().wram())
+    {
+        eprintln!("failed to write {}: {error}", dump_wram_path.display());
         return ExitCode::FAILURE;
     }
 

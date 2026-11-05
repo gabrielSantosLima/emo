@@ -55,6 +55,7 @@ blanking and prints the master clock plus a state hash per frame. Useful flags:
 - `--save-state PATH` - write the final machine state (versioned, bincode).
 - `--dump-frame PATH` - write the final frame as a PPM (P6) image.
 - `--dump-vram PATH` - write the final 64 KiB of PPU VRAM to a file.
+- `--dump-wram PATH` - write the final 128 KiB of work RAM to a file.
 - `--ipl PATH` - use a 64-byte SPC700 IPL ROM instead of the built-in boot
   protocol. If `roms/ipl.bin` or `ipl.bin` exists it is picked up automatically.
   The built-in protocol is experimental and does not match commercial drivers.
