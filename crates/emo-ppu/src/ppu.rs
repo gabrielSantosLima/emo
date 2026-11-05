@@ -502,12 +502,259 @@ impl Ppu {
             return;
         }
 
+        // Mosaic quantises the sampling position, so the per-pixel path stays
+        // authoritative for it; every other case uses the line buffers below.
+        if self.mosaic != 0 {
+            for x in 0..SCREEN_WIDTH {
+                let (r, g, b) = self.pixel_color(x as u16, y);
+                let base = start + x * 3;
+                self.framebuffer[base] = r;
+                self.framebuffer[base + 1] = g;
+                self.framebuffer[base + 2] = b;
+            }
+            return;
+        }
+
+        let mode = self.bgmode & 0x07;
+        let mut bg_index = [[0u16; SCREEN_WIDTH]; 4];
+        let mut bg_priority = [[0u8; SCREEN_WIDTH]; 4];
+        let mut obj_index = [0u16; SCREEN_WIDTH];
+        let mut obj_priority = [0u8; SCREEN_WIDTH];
+
+        if mode == 7 {
+            for (x, slot) in bg_index[0].iter_mut().enumerate() {
+                if let Some((index, priority)) = self.mode7_pixel(x as u16, y) {
+                    *slot = index;
+                    bg_priority[0][x] = priority;
+                }
+            }
+        } else {
+            for layer in 0..4 {
+                if self.tm & (1 << layer) == 0 {
+                    continue;
+                }
+                self.build_bg_line(
+                    layer,
+                    y,
+                    mode,
+                    &mut bg_index[layer],
+                    &mut bg_priority[layer],
+                );
+            }
+        }
+
+        if self.tm & 0x10 != 0 {
+            self.build_sprite_line(y, &mut obj_index, &mut obj_priority);
+        }
+
         for x in 0..SCREEN_WIDTH {
-            let (r, g, b) = self.pixel_color(x as u16, y);
+            let mut best_rank = 0u8;
+            let mut index = 0u16;
+            let mut math_bit = 0x20u8; // backdrop
+
+            for layer in 0..4 {
+                if self.tm & (1 << layer) == 0 || self.layer_hidden(layer, x as u16) {
+                    continue;
+                }
+                if bg_index[layer][x] == 0 {
+                    continue;
+                }
+                let rank = PRIORITY_RANK[layer][usize::from(bg_priority[layer][x] & 3)];
+                if rank > best_rank {
+                    best_rank = rank;
+                    index = bg_index[layer][x];
+                    math_bit = 1 << layer;
+                }
+            }
+
+            if obj_index[x] != 0 && !self.layer_hidden(4, x as u16) {
+                let rank = PRIORITY_RANK[usize::from(obj_priority[x] & 3)][4];
+                if rank > best_rank {
+                    best_rank = rank;
+                    index = obj_index[x];
+                    math_bit = 0x10;
+                }
+            }
+
+            let (r, g, b) = self.shade(index, math_bit, best_rank);
             let base = start + x * 3;
             self.framebuffer[base] = r;
             self.framebuffer[base + 1] = g;
             self.framebuffer[base + 2] = b;
+        }
+    }
+
+    /// Decode one background scanline into palette indices, one span per tile.
+    fn build_bg_line(
+        &self,
+        layer: usize,
+        y: u16,
+        mode: u8,
+        index: &mut [u16; SCREEN_WIDTH],
+        priority: &mut [u8; SCREEN_WIDTH],
+    ) {
+        let Some((bpp, palette_base)) = Self::bg_format(mode, layer) else {
+            return;
+        };
+
+        let screen = self.bgsc[layer];
+        let size = screen & 0x03;
+        let base_words = u16::from(screen & 0xFC) << 8;
+
+        let sy = (y.wrapping_add(self.bgvofs[layer])) & 0x03FF;
+        let tile_y = if size & 0x02 != 0 {
+            (sy >> 3) & 0x3F
+        } else {
+            (sy >> 3) & 0x1F
+        };
+        let row = usize::from(sy & 7);
+
+        let nibble = if layer.is_multiple_of(2) {
+            self.bgnba[layer / 2] & 0x0F
+        } else {
+            self.bgnba[layer / 2] >> 4
+        };
+        let char_base = u16::from(nibble) << 12;
+        let words_per_tile = (bpp as u16) * 4;
+
+        let hofs = self.bghofs[layer];
+        let mut x = 0usize;
+        while x < SCREEN_WIDTH {
+            let sx = ((x as u16).wrapping_add(hofs)) & 0x03FF;
+            let span = (8 - usize::from(sx & 7)).min(SCREEN_WIDTH - x);
+            let tile_x = if size & 0x01 != 0 {
+                (sx >> 3) & 0x3F
+            } else {
+                (sx >> 3) & 0x1F
+            };
+
+            let mut map_offset = (tile_y & 0x1F) * 32 + (tile_x & 0x1F);
+            if size & 0x01 != 0 && tile_x >= 32 {
+                map_offset += 0x400;
+            }
+            if size & 0x02 != 0 && tile_y >= 32 {
+                map_offset += 0x800;
+            }
+
+            let entry = self.read_vram_word(base_words.wrapping_add(map_offset));
+            let tile = entry & 0x03FF;
+            let palette = (entry >> 10) & 0x07;
+            let entry_priority = ((entry >> 13) & 0x03) as u8;
+            let hflip = entry & 0x4000 != 0;
+            let vflip = entry & 0x8000 != 0;
+
+            let py = if vflip { 7 - row } else { row };
+            let tile_addr = char_base.wrapping_add(tile.wrapping_mul(words_per_tile));
+            let pixels = tile_row(&self.vram, tile_addr, bpp, py);
+
+            for offset in 0..span {
+                let source = usize::from(sx & 7) + offset;
+                let pixel = pixels[if hflip { 7 - source } else { source } & 7];
+                if pixel == 0 {
+                    continue;
+                }
+                index[x + offset] = match bpp {
+                    2 => palette_base + palette * 4 + u16::from(pixel),
+                    4 => palette * 16 + u16::from(pixel),
+                    _ => u16::from(pixel),
+                };
+                priority[x + offset] = entry_priority;
+            }
+            x += span;
+        }
+    }
+
+    /// Decode the sprite pixels covering one scanline, keeping the winning
+    /// sprite per column (lowest priority number, then lowest OAM index).
+    fn build_sprite_line(
+        &self,
+        y: u16,
+        index: &mut [u16; SCREEN_WIDTH],
+        priority: &mut [u8; SCREEN_WIDTH],
+    ) {
+        let size_pair = (self.obsel >> 5) & 0x07;
+        let (small, large) = match size_pair {
+            0 => (8u16, 16u16),
+            1 => (8, 32),
+            2 => (8, 64),
+            3 => (16, 32),
+            4 => (16, 64),
+            5 => (32, 64),
+            _ => (8, 8),
+        };
+        let base_words = u16::from(self.obsel & 0x07) << 12;
+
+        for sprite in 0..128 {
+            let offset = sprite * 4;
+            let sx = u16::from(self.oam[offset]);
+            let sy = u16::from(self.oam[offset + 1]);
+            let tile = u16::from(self.oam[offset + 2]);
+            let attr = self.oam[offset + 3];
+
+            let size = if attr & 0x01 != 0 { large } else { small };
+            if y < sy || y >= sy + size {
+                continue;
+            }
+
+            let mut py = y - sy;
+            if attr & 0x80 != 0 {
+                py = size - 1 - py;
+            }
+            let cy = py / 8;
+            let row = usize::from(py % 8);
+
+            let palette = (attr >> 1) & 0x07;
+            let entry_priority = (attr >> 4) & 0x03;
+            let hflip = attr & 0x40 != 0;
+
+            for cx in 0..size / 8 {
+                let tile_index = tile.wrapping_add(cy * 16 + cx);
+                let tile_addr = base_words.wrapping_add(tile_index.wrapping_mul(16));
+                let pixels = tile_row(&self.vram, tile_addr, 4, row);
+                for (col, pixel) in pixels.iter().enumerate() {
+                    if *pixel == 0 {
+                        continue;
+                    }
+                    let local = cx * 8 + col as u16;
+                    let local = if hflip { size - 1 - local } else { local };
+                    let screen_x = usize::from(sx.wrapping_add(local));
+                    if screen_x >= SCREEN_WIDTH {
+                        continue;
+                    }
+                    if index[screen_x] == 0 || entry_priority < priority[screen_x] {
+                        index[screen_x] = 128 + u16::from(palette) * 16 + u16::from(*pixel);
+                        priority[screen_x] = entry_priority;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pixel format of a background layer for the given mode.
+    fn bg_format(mode: u8, layer: usize) -> Option<(usize, u16)> {
+        match (mode, layer) {
+            (0, _) => Some((2, layer as u16 * 8)),
+            (1, 0 | 1) => Some((4, 0)),
+            (1, 2) => Some((2, 0)),
+            (2, 0 | 1) => Some((4, 0)),
+            (3, 0 | 1) => Some((8, 0)),
+            (4, 0) => Some((8, 0)),
+            (4, 1) => Some((4, 0)),
+            (5 | 6, 0 | 1) => Some((4, 0)),
+            _ => None,
+        }
+    }
+
+    /// Sprite sizes selected by `OBSEL`: (small, large).
+    fn sprite_sizes(obsel: u8) -> (u16, u16) {
+        match (obsel >> 5) & 0x07 {
+            0 => (8, 16),
+            1 => (8, 32),
+            2 => (8, 64),
+            3 => (16, 32),
+            4 => (16, 64),
+            5 => (32, 64),
+            _ => (8, 8),
         }
     }
 
@@ -543,7 +790,13 @@ impl Ppu {
             }
         }
 
-        let color = self.cgram[index as usize & 0xFF];
+        self.shade(index, math_bit, best_rank)
+    }
+
+    /// Resolve a palette index into RGB, applying fixed-color math and the
+    /// master brightness.
+    fn shade(&self, index: u16, math_bit: u8, best_rank: u8) -> (u8, u8, u8) {
+        let color = self.cgram[usize::from(index) & 0xFF];
         let (mut r, mut g, mut b) = bgr555_to_rgb(color);
 
         if self.cgadsub & 0x80 != 0
@@ -634,17 +887,7 @@ impl Ppu {
             (x, y)
         };
 
-        let (bpp, palette_base) = match (mode, layer) {
-            (0, _) => (2, layer as u16 * 8),
-            (1, 0 | 1) => (4, 0),
-            (1, 2) => (2, 0),
-            (2, 0 | 1) => (4, 0),
-            (3, 0 | 1) => (8, 0),
-            (4, 0) => (8, 0),
-            (4, 1) => (4, 0),
-            (5 | 6, 0 | 1) => (4, 0),
-            _ => return None,
-        };
+        let (bpp, palette_base) = Self::bg_format(mode, layer)?;
 
         let screen = self.bgsc[layer];
         let size = screen & 0x03;
@@ -767,16 +1010,7 @@ impl Ppu {
             (x, y)
         };
 
-        let size_pair = (self.obsel >> 5) & 0x07;
-        let (small, large) = match size_pair {
-            0 => (8u16, 16u16),
-            1 => (8, 32),
-            2 => (8, 64),
-            3 => (16, 32),
-            4 => (16, 64),
-            5 => (32, 64),
-            _ => (8, 8),
-        };
+        let (small, large) = Self::sprite_sizes(self.obsel);
         let base_words = u16::from(self.obsel & 0x07) << 12;
 
         let mut best: Option<(u16, u8)> = None;
@@ -820,10 +1054,10 @@ impl Ppu {
             let priority = (attr >> 4) & 0x03;
             let index = 128 + u16::from(palette) * 16 + u16::from(pixel);
 
-            best = match best {
-                Some((_, best_priority)) if priority <= best_priority => best,
-                _ => Some((index, priority)),
-            };
+            // Lower priority number wins; on a tie the lower OAM index wins.
+            if best.is_none_or(|(_, best_priority)| priority < best_priority) {
+                best = Some((index, priority));
+            }
         }
 
         best
@@ -856,6 +1090,14 @@ fn bgr555_to_rgb(color: u16) -> (u8, u8, u8) {
     let g = (((color >> 5) & 0x1F) << 3) as u8;
     let b = (((color >> 10) & 0x1F) << 3) as u8;
     (r, g, b)
+}
+
+fn tile_row(vram: &[u8], base: u16, bpp: usize, y: usize) -> [u8; 8] {
+    let mut row = [0u8; 8];
+    for (x, pixel) in row.iter_mut().enumerate() {
+        *pixel = tile_pixel(vram, base, bpp, x, y);
+    }
+    row
 }
 
 fn tile_pixel(vram: &[u8], base: u16, bpp: usize, x: usize, y: usize) -> u8 {
@@ -1038,6 +1280,59 @@ mod tests {
 
         assert_eq!(ppu.read_vram_word(0x4000), 0x1234);
         assert_eq!(ppu.read_vram_word(0x7fff), 0xabcd);
+    }
+
+    fn set_sprite(ppu: &mut Ppu, index: usize, x: u8, y: u8, tile: u8, attr: u8) {
+        ppu.write_register(0x2102, (index * 4) as u8);
+        ppu.write_register(0x2103, 0);
+        for byte in [x, y, tile, attr] {
+            ppu.write_register(0x2104, byte);
+        }
+    }
+
+    /// Sprite with a single opaque pixel at its top-left corner.
+    fn solid_sprite_tile(ppu: &mut Ppu, tile: u8) {
+        ppu.write_vram_word(u16::from(tile) * 16, 0x0080);
+    }
+
+    #[test]
+    fn sprite_priority_follows_the_number_not_the_oam_index() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 129, 31, 0, 0); // sprite palette 0, colour 1: red
+        set_color(&mut ppu, 145, 0, 31, 0); // sprite palette 1, colour 1: green
+
+        ppu.write_register(0x212C, 0x10); // OBJ on the main screen
+        solid_sprite_tile(&mut ppu, 1);
+        solid_sprite_tile(&mut ppu, 2);
+
+        // The first sprite has the lowest priority number available (3 is the
+        // lowest priority); the second one outranks it.
+        set_sprite(&mut ppu, 0, 10, 10, 1, 0x30);
+        set_sprite(&mut ppu, 1, 10, 10, 2, 0x02);
+
+        ppu.advance_to(ppu.timing().line_cycles * 12);
+
+        let offset = (10 * SCREEN_WIDTH + 10) * 3;
+        assert_eq!(&ppu.framebuffer()[offset..offset + 3], &[0, 248, 0]);
+    }
+
+    #[test]
+    fn equal_sprite_priority_keeps_the_lower_oam_index() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 129, 31, 0, 0);
+        set_color(&mut ppu, 145, 0, 31, 0);
+
+        ppu.write_register(0x212C, 0x10);
+        solid_sprite_tile(&mut ppu, 1);
+        solid_sprite_tile(&mut ppu, 2);
+
+        set_sprite(&mut ppu, 0, 10, 10, 1, 0x00);
+        set_sprite(&mut ppu, 1, 10, 10, 2, 0x02);
+
+        ppu.advance_to(ppu.timing().line_cycles * 12);
+
+        let offset = (10 * SCREEN_WIDTH + 10) * 3;
+        assert_eq!(&ppu.framebuffer()[offset..offset + 3], &[248, 0, 0]);
     }
 
     #[test]
