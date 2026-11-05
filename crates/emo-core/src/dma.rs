@@ -75,12 +75,14 @@ impl DmaChannel {
     }
 
     /// A-bus step after each byte.
+    ///
+    /// `DMAP` bits 4-3: 0 = increment, 2 = decrement, 1 and 3 = fixed.
     #[must_use]
     pub const fn a_step(&self) -> i32 {
         match (self.dmap >> 3) & 0x03 {
-            1 => -1,
-            2 => 0,
-            _ => 1,
+            0 => 1,
+            2 => -1,
+            _ => 0,
         }
     }
 

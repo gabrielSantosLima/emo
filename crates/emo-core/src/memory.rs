@@ -32,6 +32,7 @@ pub struct Memory {
     hdma_enable: u8,
     pending_cycles: u64,
     open_bus: u8,
+    wram_addr: u32,
     buttons: [u16; 4],
     joy_latch: [u16; 4],
     manual_shift: [u16; 2],
@@ -59,6 +60,7 @@ impl Memory {
             hdma_enable: 0,
             pending_cycles: 0,
             open_bus: 0,
+            wram_addr: 0,
             buttons: [0; 4],
             joy_latch: [0; 4],
             manual_shift: [0; 2],
@@ -297,12 +299,19 @@ impl Memory {
             self.ppu.write_register(address, value);
         } else if (0x2140..=0x2143).contains(&address) {
             self.apu.cpu_write(usize::from(address - 0x2140), value);
+        } else if address == 0x2180 {
+            self.wram[self.wram_addr as usize & (WRAM_SIZE - 1)] = value;
+            self.wram_addr = (self.wram_addr + 1) & 0x1_ffff;
         }
     }
 
     fn b_read(&mut self, address: u16) -> u8 {
         if (0x2100..=0x213F).contains(&address) {
             self.ppu.read_register(address)
+        } else if address == 0x2180 {
+            let value = self.wram[self.wram_addr as usize & (WRAM_SIZE - 1)];
+            self.wram_addr = (self.wram_addr + 1) & 0x1_ffff;
+            value
         } else {
             self.open_bus
         }
@@ -365,6 +374,12 @@ impl Memory {
 
         if matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
             match addr {
+                0x2180 => {
+                    let value = self.wram[self.wram_addr as usize & (WRAM_SIZE - 1)];
+                    self.wram_addr = (self.wram_addr + 1) & 0x1_ffff;
+                    return Some(value);
+                }
+                0x2181..=0x2183 => return Some(0),
                 0x4210 => {
                     let flag = self.take_nmi_flag();
                     return Some(u8::from(flag) << 7 | 0x02);
@@ -435,6 +450,23 @@ impl Memory {
 
         if matches!(bank, 0x00..=0x3F | 0x80..=0xBF) {
             match addr {
+                0x2180 => {
+                    self.wram[self.wram_addr as usize & (WRAM_SIZE - 1)] = value;
+                    self.wram_addr = (self.wram_addr + 1) & 0x1_ffff;
+                    return true;
+                }
+                0x2181 => {
+                    self.wram_addr = (self.wram_addr & !0xff) | u32::from(value);
+                    return true;
+                }
+                0x2182 => {
+                    self.wram_addr = (self.wram_addr & !0xff00) | (u32::from(value) << 8);
+                    return true;
+                }
+                0x2183 => {
+                    self.wram_addr = (self.wram_addr & !0x1_0000) | ((u32::from(value) & 1) << 16);
+                    return true;
+                }
                 0x4200 => {
                     self.nmitimen = value;
                     return true;
@@ -636,6 +668,54 @@ mod tests {
         assert_eq!(memory.ppu().vram()[0], 0x12);
         assert_eq!(memory.ppu().vram()[1], 0x34);
         assert!(memory.take_pending_cycles() > 0);
+    }
+
+    fn run_one_byte_dma(memory: &mut Memory, dmap: u8, source: u16, count: u16) {
+        // Destination through WMDATA ($2180) at $7E:2000.
+        memory.write(0x00, 0x2181, 0x00);
+        memory.write(0x00, 0x2182, 0x20);
+        memory.write(0x00, 0x2183, 0x00);
+
+        memory.write(0x00, 0x4300, dmap);
+        memory.write(0x00, 0x4301, 0x80);
+        memory.write(0x00, 0x4302, source as u8);
+        memory.write(0x00, 0x4303, (source >> 8) as u8);
+        memory.write(0x00, 0x4304, 0x7E);
+        memory.write(0x00, 0x4305, count as u8);
+        memory.write(0x00, 0x4306, (count >> 8) as u8);
+        memory.write(0x00, 0x420B, 0x01);
+    }
+
+    #[test]
+    fn dma_a_bus_step_can_decrement() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+        memory.write(0x7E, 0x1010, 0x11);
+        memory.write(0x7E, 0x1011, 0x22);
+        memory.write(0x7E, 0x1012, 0x33);
+
+        // Mode 0, direction A->B, A-bus step = decrement (2).
+        run_one_byte_dma(&mut memory, 0x10, 0x1012, 3);
+
+        assert_eq!(memory.read(0x7E, 0x2000), 0x33);
+        assert_eq!(memory.read(0x7E, 0x2001), 0x22);
+        assert_eq!(memory.read(0x7E, 0x2002), 0x11);
+    }
+
+    #[test]
+    fn dma_a_bus_step_can_hold_the_source_fixed() {
+        let mut memory = Memory::new(cartridge(Mapping::LoRom), crate::VideoStandard::Ntsc);
+        memory.write(0x7E, 0x1010, 0x44);
+
+        // Mode 0, direction A->B, A-bus step = fixed (1 and 3).
+        run_one_byte_dma(&mut memory, 0x08, 0x1010, 3);
+        assert_eq!(memory.read(0x7E, 0x2000), 0x44);
+        assert_eq!(memory.read(0x7E, 0x2001), 0x44);
+        assert_eq!(memory.read(0x7E, 0x2002), 0x44);
+
+        run_one_byte_dma(&mut memory, 0x18, 0x1010, 3);
+        assert_eq!(memory.read(0x7E, 0x2000), 0x44);
+        assert_eq!(memory.read(0x7E, 0x2001), 0x44);
+        assert_eq!(memory.read(0x7E, 0x2002), 0x44);
     }
 
     #[test]
