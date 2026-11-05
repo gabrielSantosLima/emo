@@ -54,21 +54,25 @@ impl Timer {
 
     /// Advance one base clock (one APU cycle).
     pub fn tick(&mut self) {
+        self.advance(1);
+    }
+
+    /// Advance by a number of APU cycles in one step.
+    pub fn advance(&mut self, cycles: u64) {
         if !self.enabled {
             return;
         }
 
-        self.counter += 1;
         let divider = if self.target == 0 {
             256
         } else {
-            u32::from(self.target)
+            u64::from(self.target)
         };
-        let period = self.base * divider;
-        if self.counter >= period {
-            self.counter = 0;
-            self.output = (self.output + 1) & 0x0f;
-        }
+        let period = u64::from(self.base) * divider;
+        let total = u64::from(self.counter) + cycles;
+        let steps = total / period;
+        self.counter = (total % period) as u32;
+        self.output = (self.output + (steps % 16) as u8) & 0x0f;
     }
 }
 

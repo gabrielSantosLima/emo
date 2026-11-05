@@ -530,22 +530,19 @@ impl Apu {
             let step = used.min(remaining);
             self.cycles += step;
 
-            for _ in 0..step {
-                for timer in &mut self.timers {
-                    timer.tick();
-                }
+            for timer in &mut self.timers {
+                timer.advance(step);
+            }
 
-                self.sample_accumulator += 1;
-                if self.sample_accumulator >= 32 {
-                    self.sample_accumulator = 0;
-                    let (left, right) = self.dsp.sample(&self.aram);
-                    self.audio.push(left);
-                    self.audio.push(right);
-                }
-
-                if self.audio.len() > 1_000_000 {
-                    self.audio.drain(..960_000);
-                }
+            self.sample_accumulator += step as u32;
+            while self.sample_accumulator >= 32 {
+                self.sample_accumulator -= 32;
+                let (left, right) = self.dsp.sample(&self.aram);
+                self.audio.push(left);
+                self.audio.push(right);
+            }
+            if self.audio.len() > 1_000_000 {
+                self.audio.drain(..960_000);
             }
 
             remaining -= step;
