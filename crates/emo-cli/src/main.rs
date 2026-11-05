@@ -323,6 +323,30 @@ fn run(
             machine.memory().ppu().in_vblank(),
             machine.memory().ppu().nmi_pending()
         );
+        {
+            let ppu = machine.memory().ppu();
+            println!(
+                "ppu mode={} tm={:02x} ts={:02x} bgsc={:02x?} char={:04x?} inidisp={:02x} obsel={:02x} vmain={:02x}",
+                ppu.background_mode(),
+                ppu.main_screen(),
+                ppu.sub_screen(),
+                [
+                    ppu.background_screen(0),
+                    ppu.background_screen(1),
+                    ppu.background_screen(2),
+                    ppu.background_screen(3)
+                ],
+                [
+                    ppu.background_char_base(0),
+                    ppu.background_char_base(1),
+                    ppu.background_char_base(2),
+                    ppu.background_char_base(3)
+                ],
+                ppu.display_control(),
+                ppu.obsel(),
+                ppu.vmain()
+            );
+        }
         println!("port writes: {:02x?}", apu.port_trace());
         let writes = apu.cpu_port_writes();
         let reads = apu.spc_port_reads();

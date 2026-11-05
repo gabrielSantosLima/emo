@@ -268,6 +268,47 @@ impl Ppu {
         self.tm
     }
 
+    /// Sub-screen designation (`$212D`).
+    #[must_use]
+    pub const fn sub_screen(&self) -> u8 {
+        self.ts
+    }
+
+    /// Object size and base (`$2101`).
+    #[must_use]
+    pub const fn obsel(&self) -> u8 {
+        self.obsel
+    }
+
+    /// Raw `VMAIN` register, for debugging.
+    #[must_use]
+    pub const fn vmain(&self) -> u8 {
+        self.vmain
+    }
+
+    /// Background mode (`$2105` bits 2-0).
+    #[must_use]
+    pub const fn background_mode(&self) -> u8 {
+        self.bgmode & 0x07
+    }
+
+    /// Screen base register for a background layer (`$2107-$210A`).
+    #[must_use]
+    pub const fn background_screen(&self, layer: usize) -> u8 {
+        self.bgsc[layer]
+    }
+
+    /// Character base word address for a background layer.
+    #[must_use]
+    pub fn background_char_base(&self, layer: usize) -> u16 {
+        let nibble = if layer.is_multiple_of(2) {
+            self.bgnba[layer / 2] & 0x0F
+        } else {
+            self.bgnba[layer / 2] >> 4
+        };
+        u16::from(nibble) << 12
+    }
+
     /// True when an NMI request is pending.
     #[must_use]
     pub const fn nmi_pending(&self) -> bool {
@@ -386,8 +427,10 @@ impl Ppu {
             0x210C => self.bgnba[1] = value,
             0x210D..=0x2114 => self.write_bg_scroll(addr, value),
             0x2115 => self.vmain = value,
-            0x2116 => self.vmaddr = (self.vmaddr & 0xFF00) | u16::from(value),
-            0x2117 => self.vmaddr = (self.vmaddr & 0x00FF) | (u16::from(value & 1) << 8),
+            0x2116 => self.vmaddr = (self.vmaddr & 0x7F00) | u16::from(value),
+            // VRAM has 32K words: the high register contributes address bits
+            // 8-14 (bit 7 and above are not connected).
+            0x2117 => self.vmaddr = (self.vmaddr & 0x00FF) | (u16::from(value & 0x7F) << 8),
             0x2118 => {
                 let address = self.vram_address();
                 self.write_vram_byte(address, value, false);
@@ -1224,7 +1267,8 @@ fn tile_pixel(vram: &[u8], base: u16, bpp: usize, x: usize, y: usize) -> u8 {
 
     for pair in 0..words_per_row {
         let word = base.wrapping_add((y * words_per_row + pair) as u16);
-        let index = usize::from(word) * 2;
+        // VRAM holds 32K words; higher addresses mirror the same array.
+        let index = usize::from(word & 0x7FFF) * 2;
         let low = vram[index];
         let high = vram[index + 1];
         let bit = 7 - x;
@@ -1387,6 +1431,17 @@ mod tests {
 
         assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
         assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[248, 0, 0]);
+    }
+
+    #[test]
+    fn vram_address_uses_all_seven_high_bits() {
+        let mut ppu = ppu();
+        ppu.write_register(0x2116, 0x34);
+        ppu.write_register(0x2117, 0x20);
+        assert_eq!(ppu.vmaddr, 0x2034);
+
+        ppu.write_register(0x2118, 0xAB);
+        assert_eq!(ppu.vram()[0x2034 * 2], 0xAB);
     }
 
     #[test]
