@@ -684,6 +684,12 @@ impl Ppu {
             let main = self.compose(x, self.tm, self.tmw, &line);
             let sub = self.compose(x, self.ts, self.tsw, &line);
             let (r, g, b) = self.shade(main, sub, x as u16);
+            if std::env::var_os("EMO_SPR").is_some() && y == 160 && (106..=137).contains(&x) {
+                eprintln!(
+                    "x={x} obj={:?} objprio={} main={main:?} sub={sub:?} rgb=({r},{g},{b})",
+                    line.obj_index[x], line.obj_priority[x]
+                );
+            }
             let base = start + x * 3;
             self.framebuffer[base] = r;
             self.framebuffer[base + 1] = g;
@@ -1000,7 +1006,8 @@ impl Ppu {
         index: &mut [u16; SCREEN_WIDTH],
         priority: &mut [u8; SCREEN_WIDTH],
     ) {
-        let base_words = u16::from(self.obsel & 0x07) << 12;
+        // OBSEL bits 0-2 select an 8 KiB word page for sprite characters.
+        let base_words = u16::from(self.obsel & 0x07) << 13;
         let page_offset = (u16::from((self.obsel >> 3) & 0x03) + 1) << 12;
         let sample_y = y;
 
@@ -1089,8 +1096,6 @@ impl Ppu {
         }
     }
 
-    /// Per-pixel fallback used when mosaic is active; it samples the layers
-    /// directly instead of using the scanline buffers.
     /// Resolve a palette index into RGB, including the CGRAM-less direct-color
     /// encoding used by 256-color backgrounds.
     fn palette_rgb(&self, index: u16) -> (u8, u8, u8) {
@@ -1199,7 +1204,7 @@ impl Ppu {
             // `WOBJSEL` bits 0-3 hold the two OBJ windows.
             _ => (self.wobjsel, 0),
         };
-        (selector >> (shift + window * 4)) & 0x03
+        (selector >> (shift + window * 2)) & 0x03
     }
 
     /// Window enable/invert field for the color-math window, taken from the
@@ -1213,11 +1218,18 @@ impl Ppu {
     /// enabled window is used as-is and two disabled windows produce an empty
     /// area.
     fn window_area(&self, fields: [u8; 2], logic: u8, x: u16) -> bool {
-        // The two-bit field is 0/3 = disabled, 1 = inside, 2 = outside.
-        let window_mask = |field: u8, window: usize| match field & 0x03 {
-            1 => Some(self.window_inside(window, x)),
-            2 => Some(!self.window_inside(window, x)),
-            _ => None,
+        // Each two-bit field is bit 0 = invert, bit 1 = enable. A window
+        // whose edges do not form a valid range covers no columns at all.
+        let window_mask = |field: u8, window: usize| {
+            if field & 0x02 == 0 {
+                return None;
+            }
+            let left = self.wh[window * 2];
+            let right = self.wh[window * 2 + 1];
+            if left >= right {
+                return None;
+            }
+            Some(self.window_inside(window, x) != (field & 0x01 != 0))
         };
         let masks = [window_mask(fields[0], 0), window_mask(fields[1], 1)];
         match (masks[0], masks[1]) {
@@ -1249,11 +1261,24 @@ impl Ppu {
     /// The color-math window uses the `MATH` fields of `WOBJSEL` and the
     /// `WOBJLOG` bits 2-3 for its mask logic.
     fn math_window(&self, x: u16) -> bool {
-        self.window_area(
-            [self.math_window_field(0), self.math_window_field(1)],
-            self.wobjlog >> 2,
-            x,
-        )
+        let fields = [self.math_window_field(0), self.math_window_field(1)];
+        // A window whose left and right edges coincide covers no columns.
+        // Treat it as unrestricted instead of masking a single column, which
+        // is what the games that leave a flat window buffer expect.
+        let mut active = false;
+        let mut degenerate = true;
+        for (window, field) in fields.iter().enumerate() {
+            if field & 0x02 != 0 {
+                active = true;
+                if self.wh[window * 2] < self.wh[window * 2 + 1] {
+                    degenerate = false;
+                }
+            }
+        }
+        if active && degenerate {
+            return true;
+        }
+        self.window_area(fields, self.wobjlog >> 2, x)
     }
 }
 
@@ -1631,14 +1656,14 @@ mod tests {
     #[test]
     fn math_window_uses_the_upper_wobjsel_fields() {
         let mut ppu = ppu();
-        ppu.write_register(0x2125, 0x50); // math window 1 inside
+        ppu.write_register(0x2125, 0x20); // math window 1 enabled, not inverted
         ppu.write_register(0x2126, 0x10);
         ppu.write_register(0x2127, 0x20);
         ppu.write_register(0x212B, 0x00);
 
         assert!(ppu.math_window(0x18));
         assert!(!ppu.math_window(0x08));
-        assert_eq!(ppu.math_window_field(0), 1);
+        assert_eq!(ppu.math_window_field(0), 2);
 
         ppu.write_register(0x2125, 0x00);
         assert!(!ppu.math_window(0x18));
@@ -1650,7 +1675,7 @@ mod tests {
         set_color(&mut ppu, 1, 0, 31, 0);
         fill_bg1(&mut ppu);
 
-        ppu.write_register(0x2125, 0x10); // math window 1: inside
+        ppu.write_register(0x2125, 0x20); // math window 1: inside
         ppu.write_register(0x2126, 0x10);
         ppu.write_register(0x2127, 0x1F);
         ppu.write_register(0x2130, 0x10); // math only inside the window
@@ -1673,7 +1698,7 @@ mod tests {
         set_color(&mut ppu, 1, 0, 31, 0);
         fill_bg1(&mut ppu);
 
-        ppu.write_register(0x2125, 0x10); // math window 1: inside
+        ppu.write_register(0x2125, 0x20); // math window 1: inside
         ppu.write_register(0x2126, 0x10);
         ppu.write_register(0x2127, 0x1F);
         ppu.write_register(0x2130, 0x80); // force black inside the window
@@ -1744,14 +1769,14 @@ mod tests {
         let mut ppu = ppu();
         ppu.write_register(0x2126, 0x10); // window 1 left
         ppu.write_register(0x2127, 0x20); // window 1 right
-        ppu.write_register(0x2123, 0x01); // BG1: window 1 enabled, not inverted
+        ppu.write_register(0x2123, 0x02); // BG1: window 1 enabled, not inverted
         ppu.write_register(0x212E, 0x01); // TMW: disable BG1 inside the window
 
         assert!(ppu.layer_window(0, 0x18));
         assert!(!ppu.layer_window(0, 0x08));
         assert!(!ppu.layer_window(1, 0x18));
 
-        ppu.write_register(0x2123, 0x02); // inverted: outside is masked
+        ppu.write_register(0x2123, 0x03); // inverted: outside is masked
         assert!(!ppu.layer_window(0, 0x18));
         assert!(ppu.layer_window(0, 0x08));
     }
