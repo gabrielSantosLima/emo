@@ -299,7 +299,8 @@ impl Audio {
             return;
         }
         let step = AUDIO_RATE as f32 / self.rate as f32;
-        let capacity = self.rate as usize;
+        // Keep at most ~100 ms of backlog so the output never lags the picture.
+        let capacity = (self.rate / 10) as usize * 2;
         while queue.len() > capacity {
             queue.pop_front();
         }
@@ -549,9 +550,9 @@ impl ApplicationHandler for App {
         if let Some(audio) = &self.audio
             && let Ok(mut queue) = audio.buffer.lock()
         {
-            // Two frames of lead-in keep the callback from starving while the
-            // window loop is still settling.
-            queue.extend(std::iter::repeat_n(0.0, (audio.rate / 30) as usize));
+            // A short lead-in keeps the callback from starving while the window
+            // loop is still settling; a longer one is heard as input lag.
+            queue.extend(std::iter::repeat_n(0.0, (audio.rate / 100) as usize));
         }
         if self.audio.is_none() {
             eprintln!("no audio output device; running without sound");
