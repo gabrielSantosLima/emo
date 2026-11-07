@@ -60,6 +60,12 @@ enum Command {
         /// Write the final 64 KiB of APU RAM to a file.
         #[arg(long)]
         dump_aram: Option<PathBuf>,
+        /// Write the current APU state as a `.spc` snapshot.
+        #[arg(long)]
+        dump_spc: Option<PathBuf>,
+        /// Only record audio from this frame onwards.
+        #[arg(long, default_value_t = 0)]
+        audio_from: u64,
         /// Write the recorded SPC700 instructions to a text file.
         #[arg(long)]
         dump_spc_trace: Option<PathBuf>,
@@ -132,6 +138,8 @@ fn main() -> ExitCode {
             dump_wram,
             dump_audio,
             dump_aram,
+            dump_spc,
+            audio_from,
             dump_spc_trace,
             debug,
             spc_trace,
@@ -149,6 +157,8 @@ fn main() -> ExitCode {
             dump_wram.as_ref(),
             dump_audio.as_ref(),
             dump_aram.as_ref(),
+            dump_spc.as_ref(),
+            audio_from,
             dump_spc_trace.as_ref(),
             debug,
             spc_trace,
@@ -174,6 +184,8 @@ fn run(
     dump_wram_path: Option<&PathBuf>,
     dump_audio_path: Option<&PathBuf>,
     dump_aram_path: Option<&PathBuf>,
+    dump_spc_path: Option<&PathBuf>,
+    audio_from: u64,
     dump_spc_trace_path: Option<&PathBuf>,
     debug: bool,
     spc_trace: usize,
@@ -271,7 +283,11 @@ fn run(
         let result = machine.run_frame();
         last_hash = result.hash;
         if dump_audio_path.is_some() {
-            audio.extend(machine.take_audio());
+            if frame >= audio_from {
+                audio.extend(machine.take_audio());
+            } else {
+                machine.take_audio();
+            }
         }
         if hash {
             println!(
@@ -354,74 +370,6 @@ fn run(
                 ppu.vmain()
             );
         }
-        {
-            let dsp = apu.dsp();
-            let dir = usize::from(dsp.register(0x5D)) << 8;
-            let aram = apu.aram();
-            println!(
-                "dsp dir={:02x} flg={:02x} mvol={:02x}/{:02x} evol={:02x}/{:02x} entries={:02x?}",
-                dsp.register(0x5D),
-                dsp.register(0x6C),
-                dsp.register(0x0C),
-                dsp.register(0x1C),
-                dsp.register(0x2C),
-                dsp.register(0x3C),
-                &aram[dir..dir + 24]
-            );
-        }
-        println!("port writes: {:02x?}", apu.port_trace());
-        let writes = apu.cpu_port_writes();
-        let reads = apu.spc_port_reads();
-        println!(
-            "cpu port writes (last 12 of {}): {:?}",
-            writes.len(),
-            &writes[writes.len().saturating_sub(12)..]
-        );
-        println!(
-            "spc port reads (last 8 of {}): {:?}",
-            reads.len(),
-            &reads[reads.len().saturating_sub(8)..]
-        );
-        println!("boot log: {:04x?}", apu.boot_log());
-        let writes = apu.boot_writes();
-        println!("boot writes ({}): {:02x?}", writes.len(), writes);
-        let aram = apu.aram();
-        println!("aram 09e0: {:02x?}", &aram[0x09E0..0x0A00]);
-        println!("aram 0500: {:02x?}", &aram[0x0500..0x0520]);
-        println!("aram 0550: {:02x?}", &aram[0x0550..0x0570]);
-        println!("aram 1338: {:02x?}", &aram[0x1338..0x1348]);
-        println!("aram 1360: {:02x?}", &aram[0x1360..0x1440]);
-        println!("aram 0540: {:02x?}", &aram[0x0540..0x05C0]);
-        println!("aram 0800: {:02x?}", &aram[0x0800..0x0840]);
-        println!("ipl accept tail: {:04x?}", apu.boot_accept_tail());
-        println!("ipl blocks: {:04x?}", apu.boot_blocks());
-        println!("ipl block tails: {:04x?}", apu.boot_block_tails());
-        println!(
-            "apu outputs: [{:02x} {:02x} {:02x} {:02x}]",
-            apu.cpu_read(0),
-            apu.cpu_read(1),
-            apu.cpu_read(2),
-            apu.cpu_read(3)
-        );
-        println!("ipl rejects: {:?}", apu.boot_rejects());
-        let all_decisions = apu.boot_decisions();
-        if let Some(index) = all_decisions
-            .iter()
-            .position(|(counter, expected, _)| *counter == 0x41 && *expected == 0x3E)
-        {
-            let start = index.saturating_sub(12);
-            println!(
-                "decisions around block 1 end ({index}): {:?}",
-                &all_decisions[start..=index]
-            );
-        }
-        let decisions = apu.boot_decisions();
-        println!(
-            "ipl decisions (last 32 of {}): {:?}",
-            decisions.len(),
-            &decisions[decisions.len().saturating_sub(32)..]
-        );
-        println!("aram ffde: {:02x?}", &aram[0xFFC0..0xFFE0]);
 
         for record in machine.cpu_trace() {
             println!(
@@ -437,14 +385,7 @@ fn run(
             );
         }
 
-        let spc_trace = apu.spc_trace();
-        for record in spc_trace.iter().take(20) {
-            println!(
-                "spc-init {:04x}: {:02x} -> {:04x}",
-                record.pc, record.opcode, record.next_pc
-            );
-        }
-        for record in spc_trace.iter().rev().take(30).rev() {
+        for record in apu.spc_trace().iter().rev().take(30).rev() {
             println!(
                 "spc {:04x}: {:02x} -> {:04x}  a={:02x} x={:02x} y={:02x} psw={:02x} sp={:02x}",
                 record.pc,
@@ -489,6 +430,30 @@ fn run(
     {
         eprintln!("failed to write {}: {error}", dump_wram_path.display());
         return ExitCode::FAILURE;
+    }
+
+    if let Some(dump_spc_path) = dump_spc_path {
+        let apu = machine.memory().apu();
+        let spc = apu.spc();
+        let mut blob = vec![0u8; 0x10200];
+        let signature = b"SNES-SPC700 Sound File Data v0.30";
+        blob[..signature.len()].copy_from_slice(signature);
+        blob[0x1B] = 0x1A;
+        blob[0x1C] = 0x1A;
+        blob[0x1D] = spc.pc as u8;
+        blob[0x1E] = (spc.pc >> 8) as u8;
+        blob[0x1F] = spc.a;
+        blob[0x20] = spc.x;
+        blob[0x21] = spc.y;
+        blob[0x22] = spc.psw;
+        blob[0x23] = spc.sp;
+        blob[0x100..0x10100].copy_from_slice(apu.aram());
+        blob[0x100 + 0xF0..0x100 + 0x100].copy_from_slice(&apu.smp_registers());
+        blob[0x10100..0x10180].copy_from_slice(apu.dsp().raw_registers());
+        if let Err(error) = std::fs::write(dump_spc_path, blob) {
+            eprintln!("failed to write {}: {error}", dump_spc_path.display());
+            return ExitCode::FAILURE;
+        }
     }
 
     if let Some(dump_audio_path) = dump_audio_path {
