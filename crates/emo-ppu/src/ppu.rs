@@ -1320,11 +1320,13 @@ fn tile_row(vram: &[u8], base: u16, bpp: usize, y: usize) -> [u8; 8] {
 }
 
 fn tile_pixel(vram: &[u8], base: u16, bpp: usize, x: usize, y: usize) -> u8 {
-    let words_per_row = bpp / 2;
+    let plane_pairs = bpp / 2;
     let mut pixel = 0u8;
 
-    for pair in 0..words_per_row {
-        let word = base.wrapping_add((y * words_per_row + pair) as u16);
+    // Planes are stored in pairs: pair 0 covers rows 0-7, pair 1 the next
+    // 8 rows (bytes 10h-1Fh), and so on (fullsnes VRAM tile format).
+    for pair in 0..plane_pairs {
+        let word = base.wrapping_add((pair * 8 + y) as u16);
         // VRAM holds 32K words; higher addresses mirror the same array.
         let index = usize::from(word & 0x7FFF) * 2;
         let low = vram[index];
@@ -1502,9 +1504,10 @@ mod tests {
         ppu.write_register(0x210B, 0x01); // characters at word $1000
         ppu.write_vram_word(0x0400, 0x0000); // map entry: tile 0, palette 0
 
-        // Pixel value 7 at (0,0): planes 0-2 set.
+        // Pixel value 7 at (0,0): planes 0 and 1 live in the first plane
+        // pair, plane 2 starts at word +8 (fullsnes tile layout).
         ppu.write_vram_word(0x1000, 0x8080);
-        ppu.write_vram_word(0x1001, 0x0080);
+        ppu.write_vram_word(0x1008, 0x0080);
 
         ppu.write_register(0x2130, 0x01); // direct color
         ppu.advance_to(ppu.timing().line_cycles * 2);
