@@ -64,6 +64,8 @@ const ORDER_MODE234: [(u8, u8); 8] = [
     (1, 0),
 ];
 
+const ORDER_MODE6: [(u8, u8); 6] = [(4, 3), (0, 1), (4, 2), (4, 1), (4, 0), (0, 0)];
+
 const ORDER_MODE7: [(u8, u8); 5] = [(4, 3), (4, 2), (4, 1), (0, 3), (4, 0)];
 
 /// Frame geometry for one video standard.
@@ -703,6 +705,7 @@ impl Ppu {
             0 => &ORDER_MODE0,
             1 if self.bgmode & 0x08 != 0 => &ORDER_MODE1_HIGH,
             1 => &ORDER_MODE1,
+            6 => &ORDER_MODE6,
             7 => &ORDER_MODE7,
             _ => &ORDER_MODE234,
         };
@@ -1068,7 +1071,7 @@ impl Ppu {
                         let entry = 128 + u16::from(palette) * 16 + u16::from(pixel);
                         for target in screen_x..span_end {
                             let column_index = target as usize;
-                            if index[column_index] == 0 || entry_priority > priority[column_index] {
+                            if index[column_index] == 0 {
                                 index[column_index] = entry;
                                 priority[column_index] = entry_priority;
                             }
@@ -1740,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn sprite_priority_uses_the_priority_number() {
+    fn sprite_priority_does_not_reorder_sprites() {
         let mut ppu = ppu();
         set_color(&mut ppu, 129, 31, 0, 0); // sprite palette 0, colour 1: red
         set_color(&mut ppu, 145, 0, 31, 0); // sprite palette 1, colour 1: green
@@ -1749,10 +1752,12 @@ mod tests {
         solid_sprite_tile(&mut ppu, 1);
         solid_sprite_tile(&mut ppu, 2);
 
-        // Priority 3 is the highest, so the first sprite wins even though the
-        // second one has the lower OAM index.
-        set_sprite(&mut ppu, 0, 10, 10, 1, 0x30);
-        set_sprite(&mut ppu, 1, 10, 10, 2, 0x02);
+        // Sprite priority only orders sprites against backgrounds. Between
+        // sprites the lower OAM index is always in front (Mesen2
+        // EvaluateNextLineSprites / FetchSpriteTile), so the first sprite wins
+        // even with the lower priority.
+        set_sprite(&mut ppu, 0, 10, 10, 1, 0x00);
+        set_sprite(&mut ppu, 1, 10, 10, 2, 0x30);
 
         ppu.advance_to(ppu.timing().line_cycles * 12);
 
