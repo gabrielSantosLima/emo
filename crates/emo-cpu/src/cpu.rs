@@ -388,16 +388,7 @@ impl Cpu {
             self.idle();
         }
         if self.m8() {
-            let value = self.read(bus, ea.bank(), ea.offset());
-            if ea.offset() == 0xFCD9 {
-                eprintln!(
-                    "dbg read_m bank={:02x} off={:04x} -> {:02x}",
-                    ea.bank(),
-                    ea.offset(),
-                    value
-                );
-            }
-            u16::from(value)
+            u16::from(self.read(bus, ea.bank(), ea.offset()))
         } else {
             // A 16-bit access keeps the bank and wraps the offset, it does not
             // carry into the next bank.
