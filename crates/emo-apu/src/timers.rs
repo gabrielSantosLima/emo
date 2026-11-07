@@ -39,6 +39,12 @@ impl Timer {
         self.enabled = enabled;
     }
 
+    /// Reload value written to `$FA-$FC`.
+    #[must_use]
+    pub const fn target(&self) -> u8 {
+        self.target
+    }
+
     /// Current output value.
     #[must_use]
     pub const fn output(&self) -> u8 {

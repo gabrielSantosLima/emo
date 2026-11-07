@@ -200,6 +200,21 @@ impl Apu {
         }
     }
 
+    /// The sixteen `$F0-$FF` SMP registers in the layout a `.spc` snapshot
+    /// stores at the end of the 64 KiB RAM image.
+    #[must_use]
+    pub fn smp_registers(&self) -> [u8; 16] {
+        let mut regs = [0u8; 16];
+        regs[1] = self.control;
+        regs[2] = self.dsp.address();
+        regs[4..8].copy_from_slice(&self.output);
+        for (index, timer) in self.timers.iter().enumerate() {
+            regs[10 + index] = timer.target();
+            regs[13 + index] = timer.output() & 0x0F;
+        }
+        regs
+    }
+
     /// Audio RAM.
     #[must_use]
     pub fn aram(&self) -> &[u8] {
@@ -536,7 +551,7 @@ impl Apu {
             self.sample_accumulator += step as u32;
             while self.sample_accumulator >= 32 {
                 self.sample_accumulator -= 32;
-                let (left, right) = self.dsp.sample(&self.aram);
+                let (left, right) = self.dsp.sample(&mut self.aram);
                 self.audio.push(left);
                 self.audio.push(right);
             }
