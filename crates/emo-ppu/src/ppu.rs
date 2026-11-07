@@ -128,8 +128,11 @@ pub struct Ppu {
     bgnba: [u8; 2],
     bghofs: [u16; 4],
     bgvofs: [u16; 4],
-    hofs_low: [bool; 4],
-    vofs_low: [bool; 4],
+    hv_latch: u8,
+    h_latch: u8,
+    m7_latch: u8,
+    m7_hofs: u16,
+    m7_vofs: u16,
     m7sel: u8,
     m7: [i16; 8],
     m7_low: [bool; 8],
@@ -188,8 +191,11 @@ impl Ppu {
             bgnba: [0; 2],
             bghofs: [0; 4],
             bgvofs: [0; 4],
-            hofs_low: [false; 4],
-            vofs_low: [false; 4],
+            hv_latch: 0,
+            h_latch: 0,
+            m7_latch: 0,
+            m7_hofs: 0,
+            m7_vofs: 0,
             m7sel: 0,
             m7: [0; 8],
             m7_low: [false; 8],
@@ -545,19 +551,26 @@ impl Ppu {
         let horizontal = offset.is_multiple_of(2);
 
         if horizontal {
-            if self.hofs_low[layer] {
-                self.bghofs[layer] = (self.bghofs[layer] & 0x00FF) | (u16::from(value) << 8);
-            } else {
-                self.bghofs[layer] = (self.bghofs[layer] & 0xFF00) | u16::from(value);
+            if addr == 0x210D {
+                self.m7_hofs = ((u16::from(value) << 8) | u16::from(self.m7_latch)) & 0x1FFF;
+                self.m7_latch = value;
             }
-            self.hofs_low[layer] = !self.hofs_low[layer];
+            // The hardware keeps two shared latches: the low byte of a
+            // horizontal write is the previous vertical write's high bits
+            // combined with the previous horizontal write's low bits.
+            self.bghofs[layer] = ((u16::from(value) << 8)
+                | u16::from(self.hv_latch & !0x07)
+                | u16::from(self.h_latch & 0x07))
+                & 0x3FF;
+            self.hv_latch = value;
+            self.h_latch = value;
         } else {
-            if self.vofs_low[layer] {
-                self.bgvofs[layer] = (self.bgvofs[layer] & 0x00FF) | (u16::from(value) << 8);
-            } else {
-                self.bgvofs[layer] = (self.bgvofs[layer] & 0xFF00) | u16::from(value);
+            if addr == 0x210E {
+                self.m7_vofs = ((u16::from(value) << 8) | u16::from(self.m7_latch)) & 0x1FFF;
+                self.m7_latch = value;
             }
-            self.vofs_low[layer] = !self.vofs_low[layer];
+            self.bgvofs[layer] = ((u16::from(value) << 8) | u16::from(self.hv_latch)) & 0x3FF;
+            self.hv_latch = value;
         }
     }
 
@@ -625,19 +638,6 @@ impl Ppu {
             return;
         }
 
-        // Mosaic quantises the sampling position, so the per-pixel path stays
-        // authoritative for it; every other case uses the line buffers below.
-        if self.mosaic != 0 {
-            for x in 0..SCREEN_WIDTH {
-                let (r, g, b) = self.pixel_color(x as u16, y);
-                let base = start + x * 3;
-                self.framebuffer[base] = r;
-                self.framebuffer[base + 1] = g;
-                self.framebuffer[base + 2] = b;
-            }
-            return;
-        }
-
         let mode = self.bgmode & 0x07;
         let mut line = LineBuffers {
             bg_index: [[0u16; SCREEN_WIDTH]; 4],
@@ -647,8 +647,16 @@ impl Ppu {
         };
 
         if mode == 7 {
+            let mosaic = u16::from(self.mosaic & 0x0F);
+            let sample_y = if mosaic > 0 { y - y % (mosaic + 1) } else { y };
             for (x, slot) in line.bg_index[0].iter_mut().enumerate() {
-                if let Some((index, priority)) = self.mode7_pixel(x as u16, y) {
+                let screen_x = x as u16;
+                let sample_x = if mosaic > 0 {
+                    screen_x - screen_x % (mosaic + 1)
+                } else {
+                    screen_x
+                };
+                if let Some((index, priority)) = self.mode7_pixel(sample_x, sample_y) {
                     *slot = index;
                     line.bg_priority[0][x] = priority;
                 }
@@ -746,7 +754,7 @@ impl Ppu {
 
     /// Decode one background scanline into palette indices, one span per tile.
     fn build_bg_line(
-        &self,
+        &mut self,
         layer: usize,
         y: u16,
         mode: u8,
@@ -772,7 +780,9 @@ impl Ppu {
         let hsize = 256usize << shift << usize::from(size & 0x01);
         let vsize = 256usize << shift << usize::from((size >> 1) & 0x01);
 
-        let sy = (usize::from(y) + usize::from(self.bgvofs[layer])) & (vsize - 1);
+        let mosaic = u16::from(self.mosaic & 0x0F);
+        let sample_y = if mosaic > 0 { y - y % (mosaic + 1) } else { y };
+        let sy = (usize::from(sample_y) + usize::from(self.bgvofs[layer])) & (vsize - 1);
 
         let nibble = if layer.is_multiple_of(2) {
             self.bgnba[layer / 2] & 0x0F
@@ -785,8 +795,20 @@ impl Ppu {
         let tile_y_full = (sy / tile_size) & 0x3F;
         let mut x = 0usize;
         while x < SCREEN_WIDTH {
-            let sx = (x + usize::from(self.bghofs[layer])) & (hsize - 1);
-            let span = (tile_size - sx % tile_size).min(SCREEN_WIDTH - x);
+            let sample_x = if mosaic > 0 {
+                let screen_x = x as u16;
+                screen_x - screen_x % mosaic
+            } else {
+                x as u16
+            };
+            let sx = (usize::from(sample_x) + usize::from(self.bghofs[layer])) & (hsize - 1);
+            let span = if mosaic > 0 {
+                usize::from(mosaic)
+            } else {
+                tile_size - sx % tile_size
+            }
+            .min(SCREEN_WIDTH - x);
+
             let tile_x_full = (sx / tile_size) & 0x3F;
 
             let mut map_offset = (tile_y_full & 0x1F) * 32 + (tile_x_full & 0x1F);
@@ -794,7 +816,9 @@ impl Ppu {
                 map_offset += 0x400;
             }
             if tile_y_full >= 32 {
-                map_offset += 0x800;
+                // A 64x64 map puts the bottom pages at +$800; a 32x64 map
+                // only has one page per row pair and uses +$400 instead.
+                map_offset += if size & 0x01 != 0 { 0x800 } else { 0x400 };
             }
 
             let entry = self.read_vram_word(base_words.wrapping_add(map_offset as u16));
@@ -819,16 +843,37 @@ impl Ppu {
                 sy % tile_size
             };
             let tile_addr = char_base.wrapping_add(character.wrapping_mul(words_per_tile));
-            let pixels = tile_row(&self.vram, tile_addr, bpp, py & 7);
 
-            for offset in 0..span {
-                let in_tile = sx % tile_size + offset;
+            // In mosaic mode every pixel of the block samples the same point.
+            let mosaic_pixel = if mosaic > 0 {
+                let in_tile = sx % tile_size;
                 let px = if hflip {
                     tile_size - 1 - in_tile
                 } else {
                     in_tile
                 };
-                let pixel = pixels[px & 7];
+                Some(tile_pixel(&self.vram, tile_addr, bpp, px & 7, py & 7))
+            } else {
+                None
+            };
+            let pixels = if mosaic == 0 {
+                Some(tile_row(&self.vram, tile_addr, bpp, py & 7))
+            } else {
+                None
+            };
+
+            for offset in 0..span {
+                let pixel = if let Some(value) = mosaic_pixel {
+                    value
+                } else {
+                    let in_tile = sx % tile_size + offset;
+                    let px = if hflip {
+                        tile_size - 1 - in_tile
+                    } else {
+                        in_tile
+                    };
+                    pixels.unwrap_or([0; 8])[px & 7]
+                };
                 if pixel == 0 {
                     continue;
                 }
@@ -859,16 +904,91 @@ impl Ppu {
         self.oam[0x200 + (sprite >> 2)]
     }
 
-    fn sprite_x(&self, sprite: usize) -> u16 {
-        u16::from(self.oam[sprite * 4])
-            | (u16::from((self.sprite_extra(sprite) >> ((sprite & 3) * 2)) & 1) << 8)
+    /// Signed 9-bit sprite X coordinate (range -256..=255).
+    fn sprite_x(&self, sprite: usize) -> i32 {
+        let high = (self.sprite_extra(sprite) >> ((sprite & 3) * 2)) & 1;
+        let value = u16::from(self.oam[sprite * 4]) | (u16::from(high) << 8);
+        if value & 0x100 != 0 {
+            i32::from(value) - 512
+        } else {
+            i32::from(value)
+        }
     }
 
-    fn sprite_size(&self, sprite: usize, small: u16, large: u16) -> u16 {
+    /// Sprite size selected by `OBSEL` and the extended OAM size bit.
+    fn sprite_size(&self, sprite: usize, small: (u16, u16), large: (u16, u16)) -> (u16, u16) {
         if (self.sprite_extra(sprite) >> ((sprite & 3) * 2 + 1)) & 1 != 0 {
             large
         } else {
             small
+        }
+    }
+
+    fn mode7_pixel(&self, x: u16, y: u16) -> Option<(u16, u8)> {
+        // Mode 7 clips the transformed origin to 10 bits and truncates the
+        // scroll terms to tile boundaries before stepping along the line
+        // (Mesen2 `RenderTilemapMode7`).
+        let clip = |value: i32| {
+            if value & 0x2000 != 0 {
+                value | !0x3FF
+            } else {
+                value & 0x3FF
+            }
+        };
+
+        let hscroll = sign13(self.m7_hofs);
+        let vscroll = sign13(self.m7_vofs);
+        let center_x = sign13(self.m7[4] as u16);
+        let center_y = sign13(self.m7[5] as u16);
+        let a = i32::from(self.m7[0]);
+        let b = i32::from(self.m7[1]);
+        let c = i32::from(self.m7[2]);
+        let d = i32::from(self.m7[3]);
+
+        let screen_x = if self.m7sel & 0x01 != 0 {
+            255 - i32::from(x)
+        } else {
+            i32::from(x)
+        };
+        let screen_y = if self.m7sel & 0x02 != 0 {
+            255 - i32::from(y)
+        } else {
+            i32::from(y)
+        };
+
+        let origin_x = ((a * clip(hscroll - center_x)) & !63)
+            + ((b * screen_y) & !63)
+            + ((b * clip(vscroll - center_y)) & !63)
+            + (center_x << 8);
+        let origin_y = ((c * clip(hscroll - center_x)) & !63)
+            + ((d * screen_y) & !63)
+            + ((d * clip(vscroll - center_y)) & !63)
+            + (center_y << 8);
+
+        let mut px = (origin_x + a * screen_x) >> 8;
+        let mut py = (origin_y + c * screen_x) >> 8;
+
+        let large_map = self.m7sel & 0x80 != 0;
+        if large_map && (!(0..=0x3FF).contains(&px) || !(0..=0x3FF).contains(&py)) {
+            if self.m7sel & 0x40 == 0 {
+                return None;
+            }
+            px = 0;
+            py = 0;
+        }
+        px &= 0x3FF;
+        py &= 0x3FF;
+
+        let tile = self.vram[((((py >> 3) & 0x7F) * 128 + ((px >> 3) & 0x7F)) * 2) as usize];
+        let address = usize::from(tile) * 128 + ((py & 7) * 16 + (px & 7) * 2 + 1) as usize;
+        let pixel = self.vram[address];
+
+        if pixel == 0 {
+            None
+        } else if self.cgwsel & 0x01 != 0 {
+            Some((0x100 | u16::from(pixel), 3))
+        } else {
+            Some((u16::from(pixel), 3))
         }
     }
 
@@ -880,55 +1000,76 @@ impl Ppu {
         index: &mut [u16; SCREEN_WIDTH],
         priority: &mut [u8; SCREEN_WIDTH],
     ) {
-        let (small, large) = Self::sprite_sizes(self.obsel);
         let base_words = u16::from(self.obsel & 0x07) << 12;
-        let gap = u16::from((self.obsel >> 3) & 0x03) << 12;
+        let page_offset = (u16::from((self.obsel >> 3) & 0x03) + 1) << 12;
+        let sample_y = y;
 
         for sprite in 0..128 {
             let offset = sprite * 4;
             let sx = self.sprite_x(sprite);
-            let sy = u16::from(self.oam[offset + 1]);
-            let tile =
-                u16::from(self.oam[offset + 2]) | (u16::from(self.oam[offset + 3] & 0x01) << 8);
-            let attr = self.oam[offset + 3];
-
-            let size = self.sprite_size(sprite, small, large);
-            if y < sy || y >= sy + size {
+            let sy = i32::from(self.oam[offset + 1]);
+            let (width, height) =
+                self.sprite_size(sprite, small_size(self.obsel), large_size(self.obsel));
+            let draw_x = if sx == -256 { 0 } else { sx };
+            if draw_x + i32::from(width) <= 0 || draw_x > 255 {
+                continue;
+            }
+            let y_gap = (i32::from(sample_y) - sy) & 0xFF;
+            if y_gap >= i32::from(height) {
                 continue;
             }
 
-            let mut py = y - sy;
-            if attr & 0x80 != 0 {
-                py = size - 1 - py;
-            }
-            let cy = py / 8;
-            let row = usize::from(py % 8);
-
+            let attr = self.oam[offset + 3];
             let palette = (attr >> 1) & 0x07;
             let entry_priority = (attr >> 4) & 0x03;
             let hflip = attr & 0x40 != 0;
+            let vflip = attr & 0x80 != 0;
+            let tile = self.oam[offset + 2];
+            let page = attr & 0x01 != 0;
+            let local_y = if vflip {
+                i32::from(height) - 1 - y_gap
+            } else {
+                y_gap
+            };
 
-            for cx in 0..size / 8 {
-                let tile_index = tile.wrapping_add(cy * 16 + cx);
-                let tile_addr = base_words
-                    .wrapping_add(tile_index.wrapping_mul(16))
-                    .wrapping_add(if tile_index >= 0x100 { gap } else { 0 });
-                let pixels = tile_row(&self.vram, tile_addr, 4, row);
-                for (col, pixel) in pixels.iter().enumerate() {
-                    if *pixel == 0 {
-                        continue;
-                    }
-                    let local = cx * 8 + col as u16;
-                    let local = if hflip { size - 1 - local } else { local };
-                    let screen_x = usize::from(sx.wrapping_add(local));
-                    if screen_x >= SCREEN_WIDTH {
-                        continue;
-                    }
-                    if index[screen_x] == 0 || entry_priority > priority[screen_x] {
-                        index[screen_x] = 128 + u16::from(palette) * 16 + u16::from(*pixel);
-                        priority[screen_x] = entry_priority;
+            let first_x = draw_x.max(0);
+            let last_x = (draw_x + i32::from(width) - 1).min(255);
+            let mut screen_x = first_x;
+            while screen_x <= last_x {
+                let block_start = screen_x as u16;
+                let span_end = screen_x + 1;
+                let local_x = i32::from(block_start) - draw_x;
+                if local_x >= 0 && local_x < i32::from(width) {
+                    let mirrored_x = if hflip {
+                        i32::from(width) - 1 - local_x
+                    } else {
+                        local_x
+                    };
+                    let column = (i32::from(tile & 0x0F) + mirrored_x / 8) & 0x0F;
+                    let row = (i32::from(tile >> 4) + local_y / 8) & 0x0F;
+                    let tile_index = (row << 4 | column) as u16;
+                    let tile_addr = base_words
+                        .wrapping_add(tile_index * 16)
+                        .wrapping_add(if page { page_offset } else { 0 });
+                    let pixel = tile_pixel(
+                        &self.vram,
+                        tile_addr,
+                        4,
+                        (mirrored_x & 7) as usize,
+                        (local_y & 7) as usize,
+                    );
+                    if pixel != 0 {
+                        let entry = 128 + u16::from(palette) * 16 + u16::from(pixel);
+                        for target in screen_x..span_end {
+                            let column_index = target as usize;
+                            if index[column_index] == 0 || entry_priority > priority[column_index] {
+                                index[column_index] = entry;
+                                priority[column_index] = entry_priority;
+                            }
+                        }
                     }
                 }
+                screen_x = span_end;
             }
         }
     }
@@ -948,61 +1089,8 @@ impl Ppu {
         }
     }
 
-    /// Sprite sizes selected by `OBSEL`: (small, large).
-    fn sprite_sizes(obsel: u8) -> (u16, u16) {
-        match (obsel >> 5) & 0x07 {
-            0 => (8, 16),
-            1 => (8, 32),
-            2 => (8, 64),
-            3 => (16, 32),
-            4 => (16, 64),
-            5 => (32, 64),
-            _ => (8, 8),
-        }
-    }
-
     /// Per-pixel fallback used when mosaic is active; it samples the layers
     /// directly instead of using the scanline buffers.
-    fn pixel_color(&self, x: u16, y: u16) -> (u8, u8, u8) {
-        let main = self.pixel_winner(x, y, self.tm, self.tmw);
-        let sub = self.pixel_winner(x, y, self.ts, self.tsw);
-        self.shade(main, sub, x)
-    }
-
-    fn pixel_winner(&self, x: u16, y: u16, screen: u8, windows: u8) -> Option<(u16, u8, u8)> {
-        let mode = self.bgmode & 0x07;
-        let mut best_rank = 0u8;
-        let mut result = None;
-
-        for layer in 0..4 {
-            if screen & (1 << layer) == 0 {
-                continue;
-            }
-            if windows & (1 << layer) != 0 && self.layer_window(layer, x) {
-                continue;
-            }
-            if let Some((index, priority)) = self.bg_pixel(layer, x, y, mode) {
-                let rank = self.layer_rank(layer, priority);
-                if rank > best_rank {
-                    best_rank = rank;
-                    result = Some((index, rank, 1 << layer));
-                }
-            }
-        }
-
-        if screen & 0x10 != 0
-            && (windows & 0x10 == 0 || !self.layer_window(4, x))
-            && let Some((index, priority)) = self.sprite_pixel(x, y)
-        {
-            let rank = self.layer_rank(4, priority);
-            if rank > best_rank {
-                result = Some((index, rank, 0x10));
-            }
-        }
-
-        result
-    }
-
     /// Resolve a palette index into RGB, including the CGRAM-less direct-color
     /// encoding used by 256-color backgrounds.
     fn palette_rgb(&self, index: u16) -> (u8, u8, u8) {
@@ -1028,17 +1116,6 @@ impl Ppu {
         }
     }
 
-    /// Whether the main screen is forced black, from `CGWSEL` bits 7-6
-    /// (0 = never, 1 = outside the math window, 2 = inside, 3 = always).
-    fn forced_black(&self, inside: bool) -> bool {
-        match (self.cgwsel >> 6) & 0x03 {
-            0 => false,
-            1 => !inside,
-            2 => inside,
-            _ => true,
-        }
-    }
-
     /// Resolve the winning main pixel into RGB: color math against the sub
     /// screen (or the fixed `COLDATA` color) and the master brightness.
     fn shade(
@@ -1047,39 +1124,53 @@ impl Ppu {
         sub: Option<(u16, u8, u8)>,
         x: u16,
     ) -> (u8, u8, u8) {
-        let (index, rank, math_bit) = main.unwrap_or((0, 0, 0x20));
+        // A transparent main pixel is the backdrop, which is still eligible
+        // for color math when `CGADSUB` bit 5 is set.
+        let (index, _rank, math_bit) = main.unwrap_or((0, 0, 0x20));
         let (mut r, mut g, mut b) = self.palette_rgb(index);
 
         let inside = self.math_window(x);
-        let black = self.forced_black(inside);
         let fixed = (
             (self.coldata[0] << 3) | (self.coldata[0] >> 2),
             (self.coldata[1] << 3) | (self.coldata[1] >> 2),
             (self.coldata[2] << 3) | (self.coldata[2] >> 2),
         );
 
-        if rank != 0 && self.cgadsub & math_bit != 0 && self.math_enabled(inside) {
-            let use_sub = self.cgwsel & 0x02 != 0;
-            let (operand, half) = match sub {
-                // The sub pixel only takes part when it is at least as
-                // front-most as the main pixel.
-                Some((sub_index, sub_rank, _)) if use_sub && sub_rank >= rank => (
-                    bgr555_to_rgb(self.cgram[usize::from(sub_index) & 0xFF]),
-                    true,
-                ),
-                // A transparent sub screen uses the fixed color; its backdrop
-                // never halves unless sub-screen layers are disabled entirely.
-                _ => (fixed, !use_sub),
-            };
-            let subtract = self.cgadsub & 0x20 != 0;
-            let half = half && self.cgadsub & 0x40 != 0 && !black;
-            r = math(r, operand.0, subtract, half);
-            g = math(g, operand.1, subtract, half);
-            b = math(b, operand.2, subtract, half);
+        let mut half = self.cgadsub & 0x40 != 0;
+        let clip = (self.cgwsel >> 6) & 0x03;
+        let clipped = match clip {
+            1 => !inside,
+            2 => inside,
+            3 => true,
+            _ => false,
+        };
+        if clipped {
+            r = 0;
+            g = 0;
+            b = 0;
+            if clip != 3 {
+                half = false;
+            }
         }
 
-        if black {
-            return (0, 0, 0);
+        if self.cgadsub & math_bit != 0 && self.math_enabled(inside) {
+            let use_sub = self.cgwsel & 0x02 != 0;
+            let (operand, halve) = if use_sub {
+                match sub {
+                    Some((sub_index, sub_rank, _)) if sub_rank > 0 => {
+                        (self.palette_rgb(sub_index), half)
+                    }
+                    // Nothing on the sub screen: hardware falls back to the
+                    // fixed color and disables the halve step.
+                    _ => (fixed, false),
+                }
+            } else {
+                (fixed, half)
+            };
+            let subtract = self.cgadsub & 0x80 != 0;
+            r = math(r, operand.0, subtract, halve);
+            g = math(g, operand.1, subtract, halve);
+            b = math(b, operand.2, subtract, halve);
         }
 
         let brightness = u16::from(self.inidisp & 0x0F) + 1;
@@ -1122,10 +1213,13 @@ impl Ppu {
     /// enabled window is used as-is and two disabled windows produce an empty
     /// area.
     fn window_area(&self, fields: [u8; 2], logic: u8, x: u16) -> bool {
-        let masks = [
-            (fields[0] & 0x01 != 0).then(|| self.window_inside(0, x) != (fields[0] & 0x02 != 0)),
-            (fields[1] & 0x01 != 0).then(|| self.window_inside(1, x) != (fields[1] & 0x02 != 0)),
-        ];
+        // The two-bit field is 0/3 = disabled, 1 = inside, 2 = outside.
+        let window_mask = |field: u8, window: usize| match field & 0x03 {
+            1 => Some(self.window_inside(window, x)),
+            2 => Some(!self.window_inside(window, x)),
+            _ => None,
+        };
+        let masks = [window_mask(fields[0], 0), window_mask(fields[1], 1)];
         match (masks[0], masks[1]) {
             (None, None) => false,
             (Some(a), None) => a,
@@ -1161,213 +1255,29 @@ impl Ppu {
             x,
         )
     }
+}
 
-    fn bg_pixel(&self, layer: usize, x: u16, y: u16, mode: u8) -> Option<(u16, u8)> {
-        if mode == 7 {
-            return if layer == 0 {
-                self.mode7_pixel(x, y)
-            } else {
-                None
-            };
-        }
-
-        let mosaic = u16::from((self.mosaic >> 4) & 0x0F);
-        let (x, y) = if mosaic > 0 {
-            (x - x % (mosaic + 1), y - y % (mosaic + 1))
-        } else {
-            (x, y)
-        };
-
-        let (bpp, palette_base) = Self::bg_format(mode, layer)?;
-
-        let screen = self.bgsc[layer];
-        let size = screen & 0x03;
-        let base_words = u16::from(screen & 0xFC) << 8;
-
-        let sx = (x.wrapping_add(self.bghofs[layer])) & 0x03FF;
-        let sy = (y.wrapping_add(self.bgvofs[layer])) & 0x03FF;
-
-        let mut tile_x = sx >> 3;
-        let mut tile_y = sy >> 3;
-        if size & 0x01 != 0 {
-            tile_x &= 0x3F;
-        } else {
-            tile_x &= 0x1F;
-        }
-        if size & 0x02 != 0 {
-            tile_y &= 0x3F;
-        } else {
-            tile_y &= 0x1F;
-        }
-
-        let mut map_offset = (tile_y & 0x1F) * 32 + (tile_x & 0x1F);
-        if size & 0x01 != 0 && tile_x >= 32 {
-            map_offset += 0x400;
-        }
-        if size & 0x02 != 0 && tile_y >= 32 {
-            map_offset += 0x800;
-        }
-
-        let entry = self.read_vram_word(base_words.wrapping_add(map_offset));
-        let tile = entry & 0x03FF;
-        let palette = (entry >> 10) & 0x07;
-        let priority = ((entry >> 13) & 0x01) as u8;
-        let hflip = entry & 0x4000 != 0;
-        let vflip = entry & 0x8000 != 0;
-
-        let mut px = (sx & 7) as usize;
-        let mut py = (sy & 7) as usize;
-        if hflip {
-            px = 7 - px;
-        }
-        if vflip {
-            py = 7 - py;
-        }
-
-        let nibble = if layer.is_multiple_of(2) {
-            self.bgnba[layer / 2] & 0x0F
-        } else {
-            self.bgnba[layer / 2] >> 4
-        };
-        let char_base = u16::from(nibble) << 12;
-        let words_per_tile = (bpp as u16) * 4;
-        let tile_addr = char_base.wrapping_add(tile.wrapping_mul(words_per_tile));
-
-        let pixel = tile_pixel(&self.vram, tile_addr, bpp, px, py);
-        if pixel == 0 {
-            return None;
-        }
-
-        let index = match bpp {
-            2 => palette_base + palette * 4 + u16::from(pixel),
-            4 => palette * 16 + u16::from(pixel),
-            _ if self.cgwsel & 0x01 != 0 => 0x100 | u16::from(pixel) | (palette << 9),
-            _ => u16::from(pixel),
-        };
-        Some((index, priority))
+/// Small sprite size selected by `OBSEL` bits 5-7.
+fn small_size(obsel: u8) -> (u16, u16) {
+    match (obsel >> 5) & 0x07 {
+        0..=2 => (8, 8),
+        3 | 4 => (16, 16),
+        5 => (32, 32),
+        _ => (16, 32),
     }
+}
 
-    fn mode7_pixel(&self, x: u16, y: u16) -> Option<(u16, u8)> {
-        let m7x = sign13(self.m7[4] as u16);
-        let m7y = sign13(self.m7[5] as u16);
-        let hofs = sign13(self.bghofs[0]);
-        let vofs = sign13(self.bgvofs[0]);
-
-        let mut screen_x = i32::from(x);
-        let mut screen_y = i32::from(y);
-        if self.m7sel & 0x01 != 0 {
-            screen_x = 255 - screen_x;
-        }
-        if self.m7sel & 0x02 != 0 {
-            screen_y = 255 - screen_y;
-        }
-
-        let a = i32::from(self.m7[0]);
-        let b = i32::from(self.m7[1]);
-        let c = i32::from(self.m7[2]);
-        let d = i32::from(self.m7[3]);
-
-        let org_x = screen_x + hofs - m7x;
-        let org_y = screen_y + vofs - m7y;
-
-        let vram_x = a * org_x + b * org_y + m7x * 256;
-        let vram_y = c * org_x + d * org_y + m7y * 256;
-
-        let mut px = vram_x >> 8;
-        let mut py = vram_y >> 8;
-
-        let outside = !(0..1024).contains(&px) || !(0..1024).contains(&py);
-        if outside {
-            match (self.m7sel >> 6) & 0x03 {
-                0 | 1 => {
-                    // Wrap within the 128x128 tile area.
-                    px &= 0x3FF;
-                    py &= 0x3FF;
-                }
-                2 => return None,
-                _ => {
-                    // Outside is filled with tile 0.
-                    return Some((u16::from(self.vram[0]), 3));
-                }
-            }
-        }
-
-        let tile = self.vram[((((py >> 3) & 0x7F) * 128 + ((px >> 3) & 0x7F)) * 2) as usize];
-        let address = usize::from(tile) * 128 + ((py & 7) * 16 + (px & 7) * 2 + 1) as usize;
-        let pixel = self.vram[address];
-
-        if pixel == 0 {
-            None
-        } else if self.cgwsel & 0x01 != 0 {
-            Some((0x100 | u16::from(pixel), 3))
-        } else {
-            Some((u16::from(pixel), 3))
-        }
-    }
-
-    fn sprite_pixel(&self, x: u16, y: u16) -> Option<(u16, u8)> {
-        let mosaic = u16::from(self.mosaic & 0x0F);
-        let (x, y) = if mosaic > 0 {
-            (x - x % (mosaic + 1), y - y % (mosaic + 1))
-        } else {
-            (x, y)
-        };
-
-        let (small, large) = Self::sprite_sizes(self.obsel);
-        let base_words = u16::from(self.obsel & 0x07) << 12;
-        let gap = u16::from((self.obsel >> 3) & 0x03) << 12;
-
-        let mut best: Option<(u16, u8)> = None;
-
-        for sprite in 0..128 {
-            let offset = sprite * 4;
-            let sx = self.sprite_x(sprite);
-            let sy = u16::from(self.oam[offset + 1]);
-            let tile =
-                u16::from(self.oam[offset + 2]) | (u16::from(self.oam[offset + 3] & 0x01) << 8);
-            let attr = self.oam[offset + 3];
-
-            let size = self.sprite_size(sprite, small, large);
-            if x < sx || x >= sx + size || y < sy || y >= sy + size {
-                continue;
-            }
-
-            let mut px = x - sx;
-            let mut py = y - sy;
-            if attr & 0x40 != 0 {
-                px = size - 1 - px;
-            }
-            if attr & 0x80 != 0 {
-                py = size - 1 - py;
-            }
-
-            let (cx, cy) = (px / 8, py / 8);
-            let tile_index = tile.wrapping_add(cy * 16 + cx);
-            let tile_addr = base_words
-                .wrapping_add(tile_index.wrapping_mul(16))
-                .wrapping_add(if tile_index >= 0x100 { gap } else { 0 });
-            let pixel = tile_pixel(
-                &self.vram,
-                tile_addr,
-                4,
-                (px % 8) as usize,
-                (py % 8) as usize,
-            );
-            if pixel == 0 {
-                continue;
-            }
-
-            let palette = (attr >> 1) & 0x07;
-            let priority = (attr >> 4) & 0x03;
-            let index = 128 + u16::from(palette) * 16 + u16::from(pixel);
-
-            // Lower priority number wins; on a tie the lower OAM index wins.
-            if best.is_none_or(|(_, best_priority)| priority < best_priority) {
-                best = Some((index, priority));
-            }
-        }
-
-        best
+/// Large sprite size selected by `OBSEL` bits 5-7.
+fn large_size(obsel: u8) -> (u16, u16) {
+    match (obsel >> 5) & 0x07 {
+        0 => (16, 16),
+        1 => (32, 32),
+        2 => (64, 64),
+        3 => (32, 32),
+        4 => (64, 64),
+        5 => (64, 64),
+        6 => (32, 64),
+        _ => (32, 32),
     }
 }
 
@@ -1386,17 +1296,19 @@ fn math(channel: u8, fixed: u8, subtract: bool, half: bool) -> u8 {
     let result = if subtract {
         value.saturating_sub(fixed)
     } else {
-        (value + fixed).min(31 << 3)
+        (value + fixed).min(255)
     };
-    let result = if half { result / 2 } else { result };
-    result.min(255) as u8
+    if half {
+        (result / 2) as u8
+    } else {
+        result as u8
+    }
 }
 
 fn bgr555_to_rgb(color: u16) -> (u8, u8, u8) {
-    let r = ((color & 0x1F) << 3) as u8;
-    let g = (((color >> 5) & 0x1F) << 3) as u8;
-    let b = (((color >> 10) & 0x1F) << 3) as u8;
-    (r, g, b)
+    // Replicate the high bits so 31 maps to full white instead of 248.
+    let expand = |value: u16| (((value & 0x1F) << 3) | ((value & 0x1F) >> 2)) as u8;
+    (expand(color), expand(color >> 5), expand(color >> 10))
 }
 
 fn tile_row(vram: &[u8], base: u16, bpp: usize, y: usize) -> [u8; 8] {
@@ -1460,7 +1372,7 @@ mod tests {
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
-        assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 0, 0]);
     }
 
     #[test]
@@ -1483,7 +1395,7 @@ mod tests {
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
-        assert_eq!(&ppu.framebuffer()[..3], &[0, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[0, 255, 0]);
     }
 
     #[test]
@@ -1512,14 +1424,14 @@ mod tests {
 
         ppu.write_register(0x2132, 0x20 | 31); // fixed color: red
         ppu.write_register(0x2130, 0x00); // fixed color, no window
-        ppu.write_register(0x2131, 0x80 | 0x01); // math + BG1
+        ppu.write_register(0x2131, 0x01); // math + BG1
         ppu.advance_to(ppu.timing().line_cycles * 2);
-        assert_eq!(&ppu.framebuffer()[..3], &[248, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 255, 0]);
 
-        ppu.write_register(0x2131, 0x80 | 0x10); // math + OBJ only
+        ppu.write_register(0x2131, 0x10); // math + OBJ only
         let next_frame = (u64::from(ppu.timing().lines_per_frame) + 2) * ppu.timing().line_cycles;
         ppu.advance_to(next_frame);
-        assert_eq!(&ppu.framebuffer()[..3], &[0, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[0, 255, 0]);
     }
 
     #[test]
@@ -1554,7 +1466,7 @@ mod tests {
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
-        assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 0, 0]);
     }
 
     #[test]
@@ -1566,7 +1478,7 @@ mod tests {
         ppu.write_register(0x210B, 0x01);
         ppu.write_register(0x2105, 0x00);
         ppu.write_register(0x212C, 0x01);
-        ppu.write_register(0x2106, 0x70); // BG mosaic size 8
+        ppu.write_register(0x2106, 0x71); // BG1 mosaic, size 8
 
         for row in 0..8 {
             ppu.write_vram_word(0x1000 + row, 0x00FF);
@@ -1575,8 +1487,8 @@ mod tests {
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
-        assert_eq!(&ppu.framebuffer()[..3], &[248, 0, 0]);
-        assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[248, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[255, 0, 0]);
     }
 
     #[test]
@@ -1693,11 +1605,24 @@ mod tests {
         }
 
         ppu.write_register(0x2130, 0x02); // sub BG/OBJ enable, math always
-        ppu.write_register(0x2131, 0x80 | 0x01); // add, math on BG1
+        ppu.write_register(0x2131, 0x01); // add, math on BG1
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
-        assert_eq!(&ppu.framebuffer()[..3], &[248, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 255, 0]);
+    }
+
+    #[test]
+    fn backdrop_gets_color_math_from_the_fixed_color() {
+        let mut ppu = ppu();
+        // Nothing on the main screen: only the backdrop is visible.
+        ppu.write_register(0x2130, 0x00); // fixed color, math always
+        ppu.write_register(0x2131, 0x20); // add to the backdrop
+        ppu.write_register(0x2132, 0x20 | 31); // red
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 0, 0]);
     }
 
     #[test]
@@ -1726,17 +1651,17 @@ mod tests {
         ppu.write_register(0x2126, 0x10);
         ppu.write_register(0x2127, 0x1F);
         ppu.write_register(0x2130, 0x10); // math only inside the window
-        ppu.write_register(0x2131, 0x80 | 0x01);
+        ppu.write_register(0x2131, 0x01);
         ppu.write_register(0x2132, 0x20 | 31); // fixed colour: red
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
         // Inside the window (x = 0x18): green + red.
         let inside = (0x18 * 3) as usize;
-        assert_eq!(&ppu.framebuffer()[inside..inside + 3], &[248, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[inside..inside + 3], &[255, 255, 0]);
         // Outside the window (x = 0x08): raw green.
         let outside = (0x08 * 3) as usize;
-        assert_eq!(&ppu.framebuffer()[outside..outside + 3], &[0, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[outside..outside + 3], &[0, 255, 0]);
     }
 
     #[test]
@@ -1753,7 +1678,7 @@ mod tests {
         ppu.advance_to(ppu.timing().line_cycles * 2);
 
         assert_eq!(&ppu.framebuffer()[(0x18 * 3) as usize..][..3], &[0, 0, 0]);
-        assert_eq!(&ppu.framebuffer()[(0x08 * 3) as usize..][..3], &[0, 248, 0]);
+        assert_eq!(&ppu.framebuffer()[(0x08 * 3) as usize..][..3], &[0, 255, 0]);
     }
 
     #[test]
@@ -1774,7 +1699,7 @@ mod tests {
         ppu.advance_to(ppu.timing().line_cycles * 12);
 
         let offset = (10 * SCREEN_WIDTH + 10) * 3;
-        assert_eq!(&ppu.framebuffer()[offset..offset + 3], &[248, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[offset..offset + 3], &[255, 0, 0]);
     }
 
     #[test]
@@ -1793,7 +1718,7 @@ mod tests {
         ppu.advance_to(ppu.timing().line_cycles * 12);
 
         let offset = (10 * SCREEN_WIDTH + 10) * 3;
-        assert_eq!(&ppu.framebuffer()[offset..offset + 3], &[248, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[offset..offset + 3], &[255, 0, 0]);
     }
 
     #[test]
@@ -1823,7 +1748,7 @@ mod tests {
         assert!(!ppu.layer_window(0, 0x08));
         assert!(!ppu.layer_window(1, 0x18));
 
-        ppu.write_register(0x2123, 0x03); // inverted: outside is masked
+        ppu.write_register(0x2123, 0x02); // inverted: outside is masked
         assert!(!ppu.layer_window(0, 0x18));
         assert!(ppu.layer_window(0, 0x08));
     }
