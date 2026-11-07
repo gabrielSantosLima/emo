@@ -651,12 +651,12 @@ impl Ppu {
         };
 
         if mode == 7 {
-            let mosaic = u16::from(self.mosaic & 0x0F);
-            let sample_y = if mosaic > 0 { y - y % (mosaic + 1) } else { y };
+            let (mosaic, mosaic_enabled) = self.mosaic_params(0);
+            let sample_y = if mosaic_enabled { y - y % mosaic } else { y };
             for (x, slot) in line.bg_index[0].iter_mut().enumerate() {
                 let screen_x = x as u16;
-                let sample_x = if mosaic > 0 {
-                    screen_x - screen_x % (mosaic + 1)
+                let sample_x = if mosaic_enabled {
+                    screen_x - screen_x % mosaic
                 } else {
                     screen_x
                 };
@@ -784,8 +784,9 @@ impl Ppu {
         let hsize = 256usize << shift << usize::from(size & 0x01);
         let vsize = 256usize << shift << usize::from((size >> 1) & 0x01);
 
-        let mosaic = u16::from(self.mosaic & 0x0F);
-        let sample_y = if mosaic > 0 { y - y % (mosaic + 1) } else { y };
+        let (mosaic_size, mosaic_enabled) = self.mosaic_params(layer);
+        let mosaic = if mosaic_enabled { mosaic_size } else { 0 };
+        let sample_y = if mosaic > 0 { y - y % mosaic } else { y };
         let sy = (usize::from(sample_y) + usize::from(self.bgvofs[layer])) & (vsize - 1);
 
         let nibble = if layer.is_multiple_of(2) {
@@ -1077,6 +1078,14 @@ impl Ppu {
                 screen_x = span_end;
             }
         }
+    }
+
+    /// Mosaic block size and whether it applies to `layer`: `$2106` holds the
+    /// size minus one in bits 7-4 and one enable bit per background in bits
+    /// 3-0 (fullsnes `$2106`). A size of one means the effect is off.
+    fn mosaic_params(&self, layer: usize) -> (u16, bool) {
+        let size = u16::from(self.mosaic >> 4) + 1;
+        (size, self.mosaic & (1 << layer) != 0 && size > 1)
     }
 
     /// Pixel format of a background layer for the given mode.
@@ -1516,6 +1525,27 @@ mod tests {
 
         assert_eq!(&ppu.framebuffer()[..3], &[255, 0, 0]);
         assert_eq!(&ppu.framebuffer()[7 * 3..8 * 3], &[255, 0, 0]);
+    }
+
+    #[test]
+    fn mosaic_size_one_is_off_for_enabled_backgrounds() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 1, 31, 0, 0);
+
+        ppu.write_register(0x2107, 0x00);
+        ppu.write_register(0x210B, 0x01);
+        ppu.write_register(0x2105, 0x00);
+        ppu.write_register(0x212C, 0x01);
+        ppu.write_register(0x2106, 0x01); // size 1 (off), BG1 enabled
+
+        // Only the first pixel of tile 0 is opaque; the neighbour must stay clear.
+        ppu.write_vram_word(0x1000, 0x0080);
+        ppu.write_vram_word(0, 0x0000);
+
+        ppu.advance_to(ppu.timing().line_cycles * 2);
+
+        assert_eq!(&ppu.framebuffer()[..3], &[255, 0, 0]);
+        assert_eq!(&ppu.framebuffer()[3..6], &[0, 0, 0]);
     }
 
     #[test]
