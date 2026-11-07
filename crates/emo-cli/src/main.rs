@@ -60,6 +60,12 @@ enum Command {
         /// Write the final 64 KiB of APU RAM to a file.
         #[arg(long)]
         dump_aram: Option<PathBuf>,
+        /// Write the final 544 bytes of OAM to a file.
+        #[arg(long)]
+        dump_oam: Option<PathBuf>,
+        /// Write the final 512 bytes of CGRAM to a file.
+        #[arg(long)]
+        dump_cgram: Option<PathBuf>,
         /// Write the current APU state as a `.spc` snapshot.
         #[arg(long)]
         dump_spc: Option<PathBuf>,
@@ -138,6 +144,8 @@ fn main() -> ExitCode {
             dump_wram,
             dump_audio,
             dump_aram,
+            dump_oam,
+            dump_cgram,
             dump_spc,
             audio_from,
             dump_spc_trace,
@@ -157,6 +165,8 @@ fn main() -> ExitCode {
             dump_wram.as_ref(),
             dump_audio.as_ref(),
             dump_aram.as_ref(),
+            dump_oam.as_ref(),
+            dump_cgram.as_ref(),
             dump_spc.as_ref(),
             audio_from,
             dump_spc_trace.as_ref(),
@@ -184,6 +194,8 @@ fn run(
     dump_wram_path: Option<&PathBuf>,
     dump_audio_path: Option<&PathBuf>,
     dump_aram_path: Option<&PathBuf>,
+    dump_oam_path: Option<&PathBuf>,
+    dump_cgram_path: Option<&PathBuf>,
     dump_spc_path: Option<&PathBuf>,
     audio_from: u64,
     dump_spc_trace_path: Option<&PathBuf>,
@@ -430,6 +442,25 @@ fn run(
     {
         eprintln!("failed to write {}: {error}", dump_wram_path.display());
         return ExitCode::FAILURE;
+    }
+
+    if let Some(dump_oam_path) = dump_oam_path
+        && let Err(error) = std::fs::write(dump_oam_path, &machine.memory().ppu().oam()[..0x220])
+    {
+        eprintln!("failed to write {}: {error}", dump_oam_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    if let Some(dump_cgram_path) = dump_cgram_path {
+        let cgram = machine.memory().ppu().cgram();
+        let mut bytes = Vec::with_capacity(cgram.len() * 2);
+        for value in cgram {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        if let Err(error) = std::fs::write(dump_cgram_path, bytes) {
+            eprintln!("failed to write {}: {error}", dump_cgram_path.display());
+            return ExitCode::FAILURE;
+        }
     }
 
     if let Some(dump_spc_path) = dump_spc_path {
