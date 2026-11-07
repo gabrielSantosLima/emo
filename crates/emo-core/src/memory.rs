@@ -249,20 +249,49 @@ impl Memory {
         }
     }
 
-    /// Enable HDMA channels and reset their table cursors.
+    /// Enable HDMA channels and initialise their table cursors. This mirrors
+    /// the hardware's HDMA init sequence: the table address comes from
+    /// `A1T/A1B`, the first entry byte is the line counter/repeat flag and, in
+    /// indirect mode, the following two bytes are the data pointer.
     pub fn write_hdma_enable(&mut self, value: u8) {
         self.hdma_enable = value;
         for index in 0..8 {
-            if value & (1 << index) != 0 {
-                self.channels[index].reset_hdma();
+            self.channels[index].reset_hdma();
+            if value & (1 << index) == 0 {
+                continue;
+            }
+
+            let bank = self.channels[index].table_bank;
+            let address = self.channels[index].table_index;
+            let counter = self.a_read((u32::from(bank) << 16) | u32::from(address));
+            self.channels[index].table_index = address.wrapping_add(1);
+            self.channels[index].remaining = counter;
+            self.channels[index].finished = counter == 0;
+            self.channels[index].do_transfer = true;
+
+            if self.channels[index].indirect {
+                let low = self
+                    .a_read((u32::from(bank) << 16) | u32::from(self.channels[index].table_index));
+                self.channels[index].table_index = self.channels[index].table_index.wrapping_add(1);
+                if self.channels[index].finished {
+                    self.channels[index].pointer = u16::from(low) << 8;
+                } else {
+                    let high = self.a_read(
+                        (u32::from(bank) << 16) | u32::from(self.channels[index].table_index),
+                    );
+                    self.channels[index].table_index =
+                        self.channels[index].table_index.wrapping_add(1);
+                    self.channels[index].pointer = u16::from(low) | (u16::from(high) << 8);
+                }
+            } else {
+                self.channels[index].pointer = self.channels[index].table_index;
+                self.channels[index].pointer_bank = self.channels[index].table_bank;
             }
         }
     }
 
     /// Run one HDMA line for every enabled channel.
     pub fn run_hdma_line(&mut self, _line: u16) {
-        let mut cycles = 0u64;
-
         for index in 0..8 {
             if self.hdma_enable & (1 << index) == 0 {
                 continue;
@@ -273,65 +302,69 @@ impl Memory {
                 continue;
             }
 
-            if channel.remaining == 0 {
-                let address =
-                    (u32::from(channel.table_bank) << 16) | u32::from(channel.table_index);
-                let header = self.a_read(address);
+            if channel.do_transfer {
+                let offsets = channel.b_offsets();
+                let base = b_address(&channel);
+                for offset in offsets {
+                    let b_addr = base.wrapping_add(u16::from(*offset));
+                    if channel.reverse() {
+                        let value = self.b_read(b_addr);
+                        self.a_write(
+                            (u32::from(channel.pointer_bank) << 16) | u32::from(channel.pointer),
+                            value,
+                        );
+                        channel.pointer = channel.pointer.wrapping_add(1);
+                    } else {
+                        let source = if channel.indirect {
+                            (u32::from(channel.pointer_bank) << 16) | u32::from(channel.pointer)
+                        } else {
+                            (u32::from(channel.table_bank) << 16) | u32::from(channel.table_index)
+                        };
+                        let value = self.a_read(source);
+                        self.b_write(b_addr, value);
+                        if channel.indirect {
+                            channel.pointer = channel.pointer.wrapping_add(1);
+                        } else {
+                            channel.table_index = channel.table_index.wrapping_add(1);
+                        }
+                    }
+                }
+                if !channel.indirect {
+                    channel.pointer = channel.table_index;
+                }
+            }
+
+            // Count down the line counter; when its low seven bits reach zero
+            // the next table entry is loaded.
+            channel.remaining = channel.remaining.wrapping_sub(1);
+            channel.do_transfer = channel.remaining & 0x80 != 0;
+            if channel.remaining & 0x7F == 0 {
+                let bank = channel.table_bank;
+                let next = self.a_read((u32::from(bank) << 16) | u32::from(channel.table_index));
                 channel.table_index = channel.table_index.wrapping_add(1);
-                cycles += 8;
-
-                if header == 0 {
-                    channel.finished = true;
-                    self.channels[index] = channel;
-                    continue;
-                }
-
-                channel.remaining = header & 0x7F;
-                channel.indirect = header & 0x80 != 0;
-                if channel.remaining == 0 {
-                    channel.remaining = 128;
-                }
+                channel.remaining = next;
 
                 if channel.indirect {
-                    let lo = self.a_read(
-                        (u32::from(channel.table_bank) << 16) | u32::from(channel.table_index),
-                    );
-                    let hi = self.a_read(
-                        (u32::from(channel.table_bank) << 16)
-                            | u32::from(channel.table_index.wrapping_add(1)),
-                    );
-                    let bank = self.a_read(
-                        (u32::from(channel.table_bank) << 16)
-                            | u32::from(channel.table_index.wrapping_add(2)),
-                    );
-                    channel.pointer = u16::from(lo) | (u16::from(hi) << 8);
-                    channel.pointer_bank = bank;
-                    channel.table_index = channel.table_index.wrapping_add(3);
-                    cycles += 24;
+                    let low = self.a_read((u32::from(bank) << 16) | u32::from(channel.table_index));
+                    channel.table_index = channel.table_index.wrapping_add(1);
+                    let high =
+                        self.a_read((u32::from(bank) << 16) | u32::from(channel.table_index));
+                    channel.table_index = channel.table_index.wrapping_add(1);
+                    channel.pointer = u16::from(low) | (u16::from(high) << 8);
                 } else {
                     channel.pointer = channel.table_index;
-                    channel.pointer_bank = channel.table_bank;
                 }
+
+                if channel.remaining == 0 {
+                    channel.finished = true;
+                }
+                channel.do_transfer = true;
             }
 
-            let b = b_address(&channel);
-            for offset in channel.b_offsets() {
-                let b_addr = b.wrapping_add(u16::from(*offset));
-                let source = (u32::from(channel.pointer_bank) << 16) | u32::from(channel.pointer);
-                let value = self.a_read(source);
-                self.b_write(b_addr, value);
-                channel.pointer = channel.pointer.wrapping_add(1);
-                cycles += 8;
-            }
-
-            if !channel.indirect {
-                channel.table_index = channel.pointer;
-            }
-            channel.remaining -= 1;
+            // Keep the readable table pointer in sync (`A2A`).
+            channel.a2a = channel.table_index;
             self.channels[index] = channel;
         }
-
-        self.pending_cycles += cycles;
     }
 
     fn a_read(&mut self, address: u32) -> u8 {
@@ -827,16 +860,17 @@ mod tests {
 
         memory.write(0x00, 0x2121, 0x00);
 
-        let table = [0x02, 0x1F, 0x00, 0xE0, 0x03, 0x00];
+        let table = [0x02, 0x1F, 0x00, 0xE0, 0xE0, 0x03];
         for (index, byte) in table.iter().enumerate() {
             memory.write(0x7E, 0x0200 + index as u16, *byte);
         }
 
         memory.write(0x00, 0x4300, 0x02);
         memory.write(0x00, 0x4301, 0x22);
-        memory.write(0x00, 0x4308, 0x00);
-        memory.write(0x00, 0x4309, 0x02);
-        memory.write(0x00, 0x430A, 0x7E);
+        // HDMA table start (A1T/A1B), not the running A2A pointer.
+        memory.write(0x00, 0x4302, 0x00);
+        memory.write(0x00, 0x4303, 0x02);
+        memory.write(0x00, 0x4304, 0x7E);
 
         memory.write(0x00, 0x420C, 0x01);
 

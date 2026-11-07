@@ -21,7 +21,7 @@ use crate::timing::VideoStandard;
 pub const MASTER_CYCLES_PER_CPU_CYCLE: u64 = 6;
 
 /// Version written into serialized save states.
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 
 /// One executed S-CPU instruction, for debugging.
 #[derive(Clone, Copy, Debug)]
@@ -128,7 +128,6 @@ pub struct Machine {
     frame_cycles: u64,
     clock: u64,
     frame: u64,
-    last_line: u64,
     last_clock: u64,
     trace: VecDeque<CpuTrace>,
     trace_limit: usize,
@@ -152,7 +151,6 @@ impl Machine {
             frame_cycles,
             clock: 0,
             frame: 0,
-            last_line: 0,
             last_clock: 0,
             trace: VecDeque::new(),
             trace_limit: 0,
@@ -170,7 +168,6 @@ impl Machine {
         self.memory.apu_mut().reset();
         self.clock = 0;
         self.frame = 0;
-        self.last_line = 0;
         self.last_clock = 0;
     }
 
@@ -221,8 +218,7 @@ impl Machine {
     /// games expect to run their per-frame logic.
     pub fn run_frame(&mut self) -> FrameResult {
         loop {
-            self.memory.ppu_mut().advance_to(self.clock);
-            self.run_hdma();
+            self.advance_ppu();
             self.check_h_irq();
 
             // The NMI is raised by `advance_to` when the PPU crosses the
@@ -296,24 +292,38 @@ impl Machine {
         }
     }
 
-    /// Run HDMA for every scanline the PPU crossed since the last call.
-    fn run_hdma(&mut self) {
-        let line = self.memory.ppu().line_counter();
-        let lines = u64::from(self.memory.ppu().timing().lines_per_frame);
-        let visible = u64::from(self.memory.ppu().visible_lines());
+    /// Advance the PPU to the current master clock, applying HDMA before each
+    /// scanline is drawn. HDMA writes take effect on the next line, so the
+    /// renderer must not run ahead of the DMA unit.
+    fn advance_ppu(&mut self) {
+        let timing = self.memory.ppu().timing();
+        let line_cycles = timing.line_cycles;
+        let lines = u64::from(timing.lines_per_frame);
+        let visible = u64::from(timing.visible_lines);
 
-        while self.last_line < line {
-            self.last_line += 1;
-            let within = self.last_line % lines;
-            if within < visible {
-                self.memory.run_hdma_line(within as u16);
+        loop {
+            let target = self.clock / line_cycles;
+            let current = self.memory.ppu().line_counter();
+            if current >= target {
+                self.memory.ppu_mut().advance_to(self.clock);
+                return;
             }
-            if self.memory.v_irq_enabled() && within == u64::from(self.memory.vtime()) {
+
+            // Finish the line that is currently being drawn, then let HDMA
+            // update the registers for the line the PPU is about to draw.
+            let boundary = (current + 1) * line_cycles;
+            self.memory.ppu_mut().advance_to(boundary);
+
+            let line = self.memory.ppu().line_counter() % lines;
+            if line < visible {
+                self.memory.run_hdma_line(line as u16);
+            }
+            if self.memory.v_irq_enabled() && line == u64::from(self.memory.vtime()) {
                 self.memory.raise_irq();
             }
-        }
 
-        self.clock += self.memory.take_pending_cycles();
+            self.clock += self.memory.take_pending_cycles();
+        }
     }
 
     /// Fire the H-counter IRQ when the current dot passes `$4207/$4208`.

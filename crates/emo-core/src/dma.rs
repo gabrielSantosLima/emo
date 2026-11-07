@@ -40,6 +40,8 @@ pub struct DmaChannel {
     pub finished: bool,
     /// True while the current entry uses indirect addressing.
     pub indirect: bool,
+    /// True when the current line should transfer a unit.
+    pub do_transfer: bool,
 }
 
 impl DmaChannel {
@@ -86,15 +88,17 @@ impl DmaChannel {
         }
     }
 
-    /// Reset the HDMA cursors from the table registers.
+    /// Reset the HDMA cursors before the first line of a frame.
     pub fn reset_hdma(&mut self) {
-        self.table_index = self.a2a;
-        self.table_bank = self.a2b;
+        // The table starts at `A1T`, not at the running `A2A` pointer.
+        self.table_index = self.a1t;
+        self.table_bank = self.a1b;
         self.remaining = 0;
         self.finished = false;
-        self.indirect = false;
-        self.pointer = self.das;
+        self.indirect = self.dmap & 0x40 != 0;
+        self.pointer = 0;
         self.pointer_bank = self.dasb;
+        self.do_transfer = false;
     }
 }
 
