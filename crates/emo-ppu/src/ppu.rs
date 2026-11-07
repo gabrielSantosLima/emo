@@ -752,7 +752,11 @@ impl Ppu {
         {
             let rank = self.layer_rank(4, line.obj_priority[x]);
             if rank > best_rank {
-                result = Some((line.obj_index[x], rank, 0x10));
+                // Colour math only applies to sprites drawn with palettes 4-7
+                // (CGRAM $100-$1FF); palettes 0-3 are never blended (Mesen2
+                // FetchSpriteTile AllowColorMath).
+                let math_bit = if line.obj_index[x] >= 192 { 0x10 } else { 0 };
+                result = Some((line.obj_index[x], rank, math_bit));
             }
         }
 
@@ -1740,6 +1744,29 @@ mod tests {
 
         assert_eq!(&ppu.framebuffer()[(0x18 * 3) as usize..][..3], &[0, 0, 0]);
         assert_eq!(&ppu.framebuffer()[(0x08 * 3) as usize..][..3], &[0, 255, 0]);
+    }
+
+    #[test]
+    fn color_math_skips_sprites_below_palette_four() {
+        let mut ppu = ppu();
+        set_color(&mut ppu, 129, 0, 31, 0); // sprite palette 0: green
+        set_color(&mut ppu, 193, 0, 31, 0); // sprite palette 4: green
+        solid_sprite_tile(&mut ppu, 1);
+        solid_sprite_tile(&mut ppu, 2);
+
+        ppu.write_register(0x212C, 0x10); // OBJ on the main screen
+        ppu.write_register(0x2130, 0x00); // math always
+        ppu.write_register(0x2131, 0x10); // add on OBJ
+        ppu.write_register(0x2132, 0x20 | 31); // fixed colour: red
+
+        set_sprite(&mut ppu, 0, 10, 10, 1, 0x00); // palette 0
+        set_sprite(&mut ppu, 1, 50, 10, 2, 0x08); // palette 4
+        ppu.advance_to(ppu.timing().line_cycles * 12);
+
+        let plain = (10 * SCREEN_WIDTH + 10) * 3;
+        assert_eq!(&ppu.framebuffer()[plain..plain + 3], &[0, 255, 0]);
+        let blended = (10 * SCREEN_WIDTH + 50) * 3;
+        assert_eq!(&ppu.framebuffer()[blended..blended + 3], &[255, 255, 0]);
     }
 
     #[test]
