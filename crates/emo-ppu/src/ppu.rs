@@ -505,7 +505,11 @@ impl Ppu {
             }
             0x211A => self.m7sel = value,
             0x211B..=0x2120 => self.write_m7(addr, value),
-            0x2121 => self.cgaddr = value,
+            0x2121 => {
+                // Writing the address also resets the two-byte write latch.
+                self.cgaddr = value;
+                self.cgram_high = false;
+            }
             0x2122 => {
                 if self.cgram_high {
                     let color = u16::from(self.cgram_latch) | (u16::from(value) << 8);
