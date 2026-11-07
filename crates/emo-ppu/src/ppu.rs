@@ -684,12 +684,6 @@ impl Ppu {
             let main = self.compose(x, self.tm, self.tmw, &line);
             let sub = self.compose(x, self.ts, self.tsw, &line);
             let (r, g, b) = self.shade(main, sub, x as u16);
-            if std::env::var_os("EMO_SPR").is_some() && y == 160 && (106..=137).contains(&x) {
-                eprintln!(
-                    "x={x} obj={:?} objprio={} main={main:?} sub={sub:?} rgb=({r},{g},{b})",
-                    line.obj_index[x], line.obj_priority[x]
-                );
-            }
             let base = start + x * 3;
             self.framebuffer[base] = r;
             self.framebuffer[base + 1] = g;
