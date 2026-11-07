@@ -1176,11 +1176,13 @@ impl Ppu {
             b = math(b, operand.2, subtract, halve);
         }
 
-        let brightness = u16::from(self.inidisp & 0x0F) + 1;
+        // Master brightness: 0 is black, 15 is full intensity (Mesen2
+        // `ApplyBrightness`, matching the hardware's linear 0..15 scale).
+        let brightness = u16::from(self.inidisp & 0x0F);
         (
-            (u16::from(r) * brightness / 16) as u8,
-            (u16::from(g) * brightness / 16) as u8,
-            (u16::from(b) * brightness / 16) as u8,
+            (u16::from(r) * brightness / 15) as u8,
+            (u16::from(g) * brightness / 15) as u8,
+            (u16::from(b) * brightness / 15) as u8,
         )
     }
 
