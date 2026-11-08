@@ -390,7 +390,9 @@ impl Ppu {
         while self.line_counter < target {
             let line = (self.line_counter % lines) as u16;
 
-            if line < self.timing.visible_lines {
+            // Scanline 0 is not displayed; the 224 visible lines are 1-224
+            // (fullsnes "PPU Frame Timing").
+            if line >= 1 && line <= self.timing.visible_lines {
                 self.render_line(line);
             }
 
@@ -637,7 +639,7 @@ impl Ppu {
     /* ---------- Rendering ---------- */
 
     fn render_line(&mut self, y: u16) {
-        let start = usize::from(y) * SCREEN_WIDTH * 3;
+        let start = usize::from(y - 1) * SCREEN_WIDTH * 3;
 
         if self.inidisp & 0x80 != 0 {
             self.framebuffer[start..start + SCREEN_WIDTH * 3].fill(0);
@@ -1547,6 +1549,7 @@ mod tests {
 
         // Only the first pixel of tile 0 is opaque; the neighbour must stay clear.
         ppu.write_vram_word(0x1000, 0x0080);
+        ppu.write_vram_word(0x1001, 0x0080);
         ppu.write_vram_word(0, 0x0000);
 
         ppu.advance_to(ppu.timing().line_cycles * 2);
@@ -1569,7 +1572,9 @@ mod tests {
         // Pixel value 7 at (0,0): planes 0 and 1 live in the first plane
         // pair, plane 2 starts at word +8 (fullsnes tile layout).
         ppu.write_vram_word(0x1000, 0x8080);
+        ppu.write_vram_word(0x1001, 0x8080);
         ppu.write_vram_word(0x1008, 0x0080);
+        ppu.write_vram_word(0x1009, 0x0080);
 
         ppu.write_register(0x2130, 0x01); // direct color
         ppu.advance_to(ppu.timing().line_cycles * 2);
@@ -1636,7 +1641,10 @@ mod tests {
 
     /// Sprite with a single opaque pixel at its top-left corner.
     fn solid_sprite_tile(ppu: &mut Ppu, tile: u8) {
-        ppu.write_vram_word(u16::from(tile) * 16, 0x0080);
+        // Fill plane 0 for every row so the sprite is opaque on any scanline.
+        for word in 0..4 {
+            ppu.write_vram_word(u16::from(tile) * 16 + word, 0x0080);
+        }
     }
 
     /// Fill BG1 with a single opaque colour across the whole visible line.
