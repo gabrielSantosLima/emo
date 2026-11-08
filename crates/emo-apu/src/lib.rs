@@ -568,14 +568,16 @@ impl Apu {
 
         while remaining > 0 {
             let used = u64::from(self.spc_step()).max(1);
-            let step = used.min(remaining);
-            self.spc_debt = used - step;
-            self.cycles += step;
+
+            // Charge the whole instruction to the clock, the timers and the
+            // DSP; only the excess beyond this call's budget is carried over,
+            // otherwise those cycles would vanish and the timers would lag.
+            self.cycles += used;
 
             for timer in &mut self.timers {
-                timer.advance(step);
+                timer.advance(used);
             }
-            self.sample_accumulator += step as u32;
+            self.sample_accumulator += used as u32;
             while self.sample_accumulator >= 32 {
                 self.sample_accumulator -= 32;
                 let (left, right) = self.dsp.sample(&mut self.aram);
@@ -586,7 +588,12 @@ impl Apu {
                 self.audio.drain(..960_000);
             }
 
-            remaining -= step;
+            if used > remaining {
+                self.spc_debt = used - remaining;
+                remaining = 0;
+            } else {
+                remaining -= used;
+            }
         }
     }
 
