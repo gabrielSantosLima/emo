@@ -381,6 +381,8 @@ fn run(
                 ppu.obsel(),
                 ppu.vmain()
             );
+            let (matrix, center_x, center_y, hofs, vofs) = ppu.mode7();
+            println!("m7 matrix={matrix:?} center=({center_x},{center_y}) scroll=({hofs},{vofs})");
         }
 
         for record in machine.cpu_trace() {

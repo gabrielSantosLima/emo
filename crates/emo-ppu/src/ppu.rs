@@ -137,7 +137,6 @@ pub struct Ppu {
     m7_vofs: u16,
     m7sel: u8,
     m7: [i16; 8],
-    m7_low: [bool; 8],
     setini: u8,
     tm: u8,
     ts: u8,
@@ -200,7 +199,6 @@ impl Ppu {
             m7_vofs: 0,
             m7sel: 0,
             m7: [0; 8],
-            m7_low: [false; 8],
             setini: 0,
             tm: 0,
             ts: 0,
@@ -336,6 +334,18 @@ impl Ppu {
     #[must_use]
     pub const fn obsel(&self) -> u8 {
         self.obsel
+    }
+
+    /// Mode 7 matrix, centre and scroll, for debugging.
+    #[must_use]
+    pub const fn mode7(&self) -> ([i16; 4], i16, i16, u16, u16) {
+        (
+            [self.m7[0], self.m7[1], self.m7[2], self.m7[3]],
+            self.m7[4],
+            self.m7[5],
+            self.m7_hofs,
+            self.m7_vofs,
+        )
     }
 
     /// Raw `VMAIN` register, for debugging.
@@ -582,16 +592,13 @@ impl Ppu {
         }
     }
 
+    /// Mode 7 registers share one byte latch: a write forms the word from the
+    /// current byte and the previously written one (Mesen2 `ValueLatch`).
     fn write_m7(&mut self, addr: u16, value: u8) {
         let index = usize::from(addr - 0x211B);
-        if self.m7_low[index] {
-            let raw = (self.m7[index] as u16 & 0x00FF) | (u16::from(value) << 8);
-            self.m7[index] = raw as i16;
-        } else {
-            let raw = (self.m7[index] as u16 & 0xFF00) | u16::from(value);
-            self.m7[index] = raw as i16;
-        }
-        self.m7_low[index] = !self.m7_low[index];
+        let raw = (u16::from(value) << 8) | u16::from(self.m7_latch);
+        self.m7_latch = value;
+        self.m7[index] = raw as i16;
     }
 
     /// Word address used by the next VRAM access, with the `VMAIN` address
@@ -1488,15 +1495,19 @@ mod tests {
         ppu.write_register(0x212C, 0x01);
         ppu.write_register(0x211A, 0x00);
 
-        // M7A = 0x0100, M7D = 0x0100, B = C = 0, centers at 0.
-        let matrix = [0x00u8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-        for (offset, value) in matrix.into_iter().enumerate() {
-            ppu.write_register(0x211B + offset as u16, value);
+        // M7A = 0x0100, M7D = 0x0100, B = C = 0, centres at 0. Each register
+        // is written twice (low byte, then high byte) to the same address.
+        for (register, low, high) in [
+            (0x211B, 0x00, 0x01), // A
+            (0x211C, 0x00, 0x00), // B
+            (0x211D, 0x00, 0x00), // C
+            (0x211E, 0x00, 0x01), // D
+            (0x211F, 0x00, 0x00), // X
+            (0x2120, 0x00, 0x00), // Y
+        ] {
+            ppu.write_register(register, low);
+            ppu.write_register(register, high);
         }
-        ppu.write_register(0x211F, 0x00);
-        ppu.write_register(0x211F, 0x00);
-        ppu.write_register(0x2120, 0x00);
-        ppu.write_register(0x2120, 0x00);
 
         // Map entry 0 -> tile 1. Tile 1, pixel (0, 0) -> color 5.
         ppu.write_register(0x2115, 0x80);
@@ -1505,6 +1516,11 @@ mod tests {
         ppu.write_register(0x2118, 0x01);
         ppu.write_register(0x2119, 0x00);
         ppu.write_register(0x2116, 0x40);
+        ppu.write_register(0x2117, 0x00);
+        ppu.write_register(0x2118, 0x00);
+        ppu.write_register(0x2119, 0x05);
+        // The first displayed scanline is line 1, which samples tile row 1.
+        ppu.write_register(0x2116, 0x48);
         ppu.write_register(0x2117, 0x00);
         ppu.write_register(0x2118, 0x00);
         ppu.write_register(0x2119, 0x05);
