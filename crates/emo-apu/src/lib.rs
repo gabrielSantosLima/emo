@@ -38,6 +38,10 @@ pub const ARAM_SIZE: usize = 0x1_0000;
 pub struct Apu {
     aram: Box<[u8]>,
     input: [u8; 4],
+    /// CPU writes waiting for the next SPC cycle, as the hardware latches the
+    /// input registers on the 2 MHz SPC clock (Mesen2 `Spc::CpuWriteRegister`).
+    pending_input: [u8; 4],
+    pending_input_valid: bool,
     output: [u8; 4],
     spc: Spc700,
     dsp: Dsp,
@@ -45,6 +49,8 @@ pub struct Apu {
     cycles: u64,
     #[serde(skip)]
     apu_accumulator: u64,
+    /// Cycles an SPC instruction overshot into the next advance call.
+    spc_debt: u64,
     sample_accumulator: u32,
     #[serde(skip)]
     audio: Vec<i16>,
@@ -118,12 +124,15 @@ impl Apu {
         Self {
             aram: vec![0; ARAM_SIZE].into_boxed_slice(),
             input: [0; 4],
+            pending_input: [0; 4],
+            pending_input_valid: false,
             output: [0; 4],
             spc: Spc700::new(),
             dsp: Dsp::new(),
             timers: [Timer::new(128), Timer::new(128), Timer::new(16)],
             cycles: 0,
             apu_accumulator: 0,
+            spc_debt: 0,
             sample_accumulator: 0,
             audio: Vec::new(),
             control: 0x80,
@@ -174,12 +183,15 @@ impl Apu {
     pub fn reset(&mut self) {
         self.aram.fill(0);
         self.input = [0; 4];
+        self.pending_input = [0; 4];
+        self.pending_input_valid = false;
         self.output = [0; 4];
         self.spc = Spc700::new();
         self.dsp = Dsp::new();
         self.timers = [Timer::new(128), Timer::new(128), Timer::new(16)];
         self.cycles = 0;
         self.apu_accumulator = 0;
+        self.spc_debt = 0;
         self.sample_accumulator = 0;
         self.audio.clear();
         self.control = 0x80;
@@ -244,6 +256,12 @@ impl Apu {
     }
 
     fn spc_step(&mut self) -> u32 {
+        // The SPC sees CPU port writes one cycle late.
+        if self.pending_input_valid {
+            self.input = self.pending_input;
+            self.pending_input_valid = false;
+        }
+
         if self.booting && self.spc.stopped {
             return 1;
         }
@@ -384,7 +402,8 @@ impl Apu {
 
     /// Main CPU writes one of `$2140-$2143`.
     pub fn cpu_write(&mut self, port: usize, value: u8) {
-        self.input[port & 3] = value;
+        self.pending_input[port & 3] = value;
+        self.pending_input_valid = true;
         if !self.booting && self.cpu_port_writes.len() < 4096 {
             self.cpu_port_writes.push((self.cycles, port as u8, value));
         }
@@ -540,9 +559,17 @@ impl Apu {
         let mut remaining = self.apu_accumulator / MASTER_CLOCK;
         self.apu_accumulator %= MASTER_CLOCK;
 
+        // An instruction that started in the previous call already ran, so the
+        // cycles it overshot are owed to this call rather than dropped;
+        // dropping them makes the SPC run faster than its 1.024 MHz clock.
+        let paid = self.spc_debt.min(remaining);
+        self.spc_debt -= paid;
+        remaining -= paid;
+
         while remaining > 0 {
             let used = u64::from(self.spc_step()).max(1);
             let step = used.min(remaining);
+            self.spc_debt = used - step;
             self.cycles += step;
 
             for timer in &mut self.timers {
@@ -644,7 +671,11 @@ mod tests {
     fn ports_are_bidirectional() {
         let mut apu = Apu::new();
 
+        // The hardware latches CPU writes on the SPC clock, so the value only
+        // reaches the SPC after its next cycle.
         apu.cpu_write(0, 0x42);
+        assert_eq!(apu.spc_read(0x00F4), 0x00);
+        apu.advance(MASTER_CLOCK / APU_CLOCK + 1);
         assert_eq!(apu.spc_read(0x00F4), 0x42);
 
         apu.spc_write(0x00F6, 0x99);
