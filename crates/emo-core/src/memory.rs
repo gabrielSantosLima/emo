@@ -28,6 +28,7 @@ pub struct Memory {
     apu: Apu,
     channels: [DmaChannel; 8],
     nmitimen: u8,
+    fast_rom: bool,
     nmi_flag: bool,
     hdma_enable: u8,
     pending_cycles: u64,
@@ -59,6 +60,7 @@ impl Memory {
             apu: Apu::new(),
             channels: std::array::from_fn(|_| DmaChannel::default()),
             nmitimen: 0,
+            fast_rom: false,
             nmi_flag: false,
             hdma_enable: 0,
             pending_cycles: 0,
@@ -558,6 +560,10 @@ impl Memory {
                     self.nmitimen = value;
                     return true;
                 }
+                0x420D => {
+                    self.fast_rom = value & 0x01 != 0;
+                    return true;
+                }
                 0x4207 => {
                     self.htime = (self.htime & 0xff00) | u16::from(value);
                     return true;
@@ -590,7 +596,6 @@ impl Memory {
                     self.write_hdma_enable(value);
                     return true;
                 }
-                0x420D => return true,
                 0x4300..=0x437F => {
                     let index = usize::from((addr - 0x4300) / 0x10);
                     let register = (addr - 0x4300) % 0x10;
@@ -632,9 +637,34 @@ impl Bus for Memory {
         value
     }
 
+    /// Access speed by region (fullsnes "Memory Speed"; Mesen2
+    /// `GenerateMasterClockTable`). Banks `$80-$BF`/`$C0-$FF` ROM is fast only
+    /// when `MEMSEL` ($420D) bit 0 is set.
+    fn access_cycles(&self, bank: u8, addr: u16) -> u64 {
+        match bank {
+            0x40..=0x7F => 8,
+            0xC0..=0xFF => self.rom_cycles(),
+            _ => match addr {
+                0x0000..=0x1FFF => 8,
+                0x2000..=0x3FFF => 6,
+                0x4000..=0x41FF => 12,
+                0x4200..=0x5FFF => 6,
+                0x6000..=0x7FFF => 8,
+                _ if bank >= 0x80 => self.rom_cycles(),
+                _ => 8,
+            },
+        }
+    }
+
     fn write(&mut self, bank: u8, addr: u16, value: u8) {
         self.write_mapped(bank, addr, value);
         self.open_bus = value;
+    }
+}
+
+impl Memory {
+    const fn rom_cycles(&self) -> u64 {
+        if self.fast_rom { 6 } else { 8 }
     }
 }
 

@@ -16,12 +16,11 @@ use crate::timing::VideoStandard;
 
 /// Master cycles in one CPU machine cycle.
 ///
-/// The S-CPU runs at `master / 6`. Slow regions add wait states on top; those
-/// are a bus concern and land with the PPU/APU register windows.
-pub const MASTER_CYCLES_PER_CPU_CYCLE: u64 = 6;
-
 /// Version written into serialized save states.
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
+
+/// Master cycles of an internal CPU cycle, used when the CPU reports no access.
+const INTERNAL_MASTER_CYCLES: u64 = 6;
 
 /// One executed S-CPU instruction, for debugging.
 #[derive(Clone, Copy, Debug)]
@@ -245,7 +244,7 @@ impl Machine {
                 break;
             }
 
-            let before = self.cpu.cycles();
+            let before = self.cpu.master_cycles();
             if self.trace_limit > 0 {
                 let registers = self.cpu.registers();
                 let mapped = self.memory.peek(registers.pbr, registers.pc);
@@ -271,14 +270,14 @@ impl Machine {
             }
 
             self.cpu.step(&mut self.memory);
-            let elapsed = self.cpu.cycles() - before;
+            let elapsed = self.cpu.master_cycles() - before;
 
             // A stopped CPU consumes no cycles; keep time moving anyway so the
             // frame loop cannot spin forever.
             self.clock += if elapsed == 0 {
-                MASTER_CYCLES_PER_CPU_CYCLE
+                INTERNAL_MASTER_CYCLES
             } else {
-                elapsed * MASTER_CYCLES_PER_CPU_CYCLE
+                elapsed
             };
             self.clock += self.memory.take_pending_cycles();
         }
@@ -473,13 +472,13 @@ impl Machine {
 
     /// Run a single CPU instruction. Useful for tests and debugging.
     pub fn step(&mut self) {
-        let before = self.cpu.cycles();
+        let before = self.cpu.master_cycles();
         self.cpu.step(&mut self.memory);
-        let elapsed = self.cpu.cycles() - before;
+        let elapsed = self.cpu.master_cycles() - before;
         self.clock += if elapsed == 0 {
-            MASTER_CYCLES_PER_CPU_CYCLE
+            INTERNAL_MASTER_CYCLES
         } else {
-            elapsed * MASTER_CYCLES_PER_CPU_CYCLE
+            elapsed
         };
     }
 }

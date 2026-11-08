@@ -11,6 +11,13 @@ pub trait Bus {
 
     /// Write one byte at `bank:addr`.
     fn write(&mut self, bank: u8, addr: u16, value: u8);
+
+    /// Master cycles one access to `bank:addr` takes. The S-CPU bus is
+    /// 6 cycles for fast regions, 8 for slow ROM/WRAM and 12 for joypad
+    /// registers (fullsnes "Memory Speed"). Flat test memory is uniform.
+    fn access_cycles(&self, _bank: u8, _addr: u16) -> u64 {
+        6
+    }
 }
 
 /// A flat 16 MB memory image.

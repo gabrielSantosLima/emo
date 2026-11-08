@@ -1,9 +1,9 @@
 //! The 65C816 (S-CPU) instruction set core.
 //!
 //! The core is a plain interpreter: [`Cpu::step`] fetches one opcode and
-//! executes it, charging one bus cycle per access or internal cycle. Turning
-//! those cycles into master cycles (6 for internal work, 8 or 12 for slow
-//! regions) is the job of `emo-core`, not of the CPU.
+//! executes it. Each access or internal cycle counts once in [`Cpu::cycles`]
+//! and adds its master-clock cost, which the [`Bus`] reports for the address
+//! being accessed, to [`Cpu::master_cycles`].
 //!
 //! Timing follows the WDC datasheet and the 65816 reference tables; cycle
 //! behavior is validated against the `SingleStepTests/65816` vectors. See
@@ -12,6 +12,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bus::Bus;
+
+/// Master cycles of one internal (no bus access) CPU cycle: the S-CPU runs at
+/// master / 6.
+const INTERNAL_MASTER_CYCLES: u64 = 6;
 
 /// Carry flag.
 pub const FLAG_C: u8 = 0x01;
@@ -113,6 +117,7 @@ pub struct Cpu {
     p: u8,
     e: bool,
     cycles: u64,
+    master_cycles: u64,
     irq_line: bool,
     nmi_line: bool,
     waiting: bool,
@@ -141,6 +146,7 @@ impl Cpu {
             p: FLAG_I | FLAG_M | FLAG_X,
             e: true,
             cycles: 0,
+            master_cycles: 0,
             irq_line: false,
             nmi_line: false,
             waiting: false,
@@ -190,6 +196,12 @@ impl Cpu {
     #[must_use]
     pub const fn cycles(&self) -> u64 {
         self.cycles
+    }
+
+    /// Master-clock cycles executed since creation.
+    #[must_use]
+    pub const fn master_cycles(&self) -> u64 {
+        self.master_cycles
     }
 
     /// Reset the cycle counter.
@@ -252,17 +264,20 @@ impl Cpu {
 
     fn read(&mut self, bus: &mut impl Bus, bank: u8, addr: u16) -> u8 {
         self.cycles += 1;
+        self.master_cycles += bus.access_cycles(bank, addr);
         bus.read(bank, addr)
     }
 
     fn write(&mut self, bus: &mut impl Bus, bank: u8, addr: u16, value: u8) {
         self.cycles += 1;
+        self.master_cycles += bus.access_cycles(bank, addr);
         bus.write(bank, addr, value);
     }
 
     /// An internal cycle: no bus transaction, but it costs one cycle.
     fn idle(&mut self) {
         self.cycles += 1;
+        self.master_cycles += INTERNAL_MASTER_CYCLES;
     }
 
     fn fetch_byte(&mut self, bus: &mut impl Bus) -> u8 {
