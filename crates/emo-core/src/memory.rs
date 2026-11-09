@@ -304,8 +304,13 @@ impl Memory {
                 continue;
             }
 
+            // HDMA steals 8 master cycles per transferred byte from the CPU
+            // (fullsnes/Mesen2 `SnesDmaController::RunHdmaTransfer`).
+            let mut cost = 0u64;
+
             if channel.do_transfer {
                 let offsets = channel.b_offsets();
+                cost += 8 * offsets.len() as u64;
                 let base = b_address(&channel);
                 for offset in offsets {
                     let b_addr = base.wrapping_add(u16::from(*offset));
@@ -336,6 +341,9 @@ impl Memory {
                 }
             }
 
+            // The counter byte is fetched on every line (8 cycles).
+            cost += 8;
+
             // Count down the line counter; when its low seven bits reach zero
             // the next table entry is loaded.
             channel.remaining = channel.remaining.wrapping_sub(1);
@@ -347,6 +355,7 @@ impl Memory {
                 channel.remaining = next;
 
                 if channel.indirect {
+                    cost += 16;
                     let low = self.a_read((u32::from(bank) << 16) | u32::from(channel.table_index));
                     channel.table_index = channel.table_index.wrapping_add(1);
                     let high =
@@ -366,6 +375,7 @@ impl Memory {
             // Keep the readable table pointer in sync (`A2A`).
             channel.a2a = channel.table_index;
             self.channels[index] = channel;
+            self.pending_cycles += cost;
         }
     }
 
